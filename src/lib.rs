@@ -1,3 +1,6 @@
+pub mod message;
+pub mod result;
+
 #[cfg(test)]
 mod tests {
     #[test]
