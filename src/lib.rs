@@ -8,7 +8,7 @@ mod tests {
     use crate::event::Event;
 
     #[derive(PartialEq, Serialize, Deserialize, Clone, Debug)]
-    pub struct SimplePayload {
+    struct SimplePayload {
         string: String,
         number: u32,
         float: f32
