@@ -9,5 +9,5 @@ edition = "2018"
 [dependencies]
 rmp = "0.8.9"
 rmp-serde = "0.14.4"
-serde = "1.0.117"
+serde = {version = "1.0.117", features = ["serde_derive"]}
 byteorder = "1.3.4"

@@ -1,18 +1,40 @@
-use serde::{Serialize};
+use serde::{Serialize, Deserialize};
 use crate::result::{VentedResult, VentedError};
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use std::io::Read;
 use serde::de::DeserializeOwned;
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct EmptyPayload {}
+
 /// A single event that has a name and payload.
 /// The payload is encoded with message pack
 #[derive(Clone, Debug)]
 pub struct Event<T> {
-    event_name: String,
-    payload: T,
+    pub name: String,
+    pub payload: T,
+}
+
+impl Event<EmptyPayload> {
+    /// Creates a new Event with an empty payload
+    pub fn new(name: String) -> Self {
+        Self  {
+            name,
+            payload: EmptyPayload {}
+        }
+    }
 }
 
 impl<T> Event<T> where T: Serialize + DeserializeOwned {
+
+    /// Creates a new Event with a payload
+    pub fn with_payload(name: String, payload: T) -> Self {
+        Self {
+            name,
+            payload,
+        }
+    }
+
     /// Returns the byte representation for the message
     /// the format is
     /// `name-length`: `u16`,
@@ -21,7 +43,7 @@ impl<T> Event<T> where T: Serialize + DeserializeOwned {
     /// `payload`: `payload-length`,
     pub fn to_bytes(&self) -> VentedResult<Vec<u8>> {
         let mut payload_raw = rmp_serde::to_vec(&self.payload)?;
-        let mut name_raw = self.event_name.as_bytes().to_vec();
+        let mut name_raw = self.name.as_bytes().to_vec();
 
         let name_length = name_raw.len();
         let mut name_length_raw = [0u8; 2];
@@ -53,7 +75,7 @@ impl<T> Event<T> where T: Serialize + DeserializeOwned {
         let payload = rmp_serde::from_read(bytes.take(payload_length))?;
 
         Ok(Self {
-            event_name,
+            name: event_name,
             payload,
         })
     }

@@ -1,7 +1,9 @@
 use std::{fmt, io};
+use std::error::Error;
 
 pub type VentedResult<T> = Result<T, VentedError>;
 
+#[derive(Debug)]
 pub enum VentedError {
     NameDecodingError,
     IOError(io::Error),
@@ -19,6 +21,8 @@ impl fmt::Display for VentedError {
         }
     }
 }
+
+impl Error for VentedError {}
 
 impl From<io::Error> for VentedError {
     fn from(other: io::Error) -> Self {
