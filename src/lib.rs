@@ -1,4 +1,4 @@
-pub mod message;
+pub mod event;
 pub mod result;
 
 #[cfg(test)]
