@@ -1,0 +1,28 @@
+use crate::event::Event;
+use crate::event_handler::EventHandler;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+#[test]
+fn it_handles_events() {
+    let mut handler = EventHandler::new();
+    let call_count = Arc::new(AtomicUsize::new(0));
+    {
+        let call_count = Arc::clone(&call_count);
+        handler.on("test", move |_event| {
+            call_count.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+    {
+        let call_count = Arc::clone(&call_count);
+        handler.on("test2", move |_event| {
+            call_count.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    handler.handle_event(Event::new("test".to_string()));
+    handler.handle_event(Event::new("test".to_string()));
+    handler.handle_event(Event::new("test2".to_string()));
+
+    assert_eq!(call_count.load(Ordering::Relaxed), 3)
+}
