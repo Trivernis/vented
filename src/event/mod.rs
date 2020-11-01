@@ -4,6 +4,9 @@ use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use std::io::Read;
 use serde::de::DeserializeOwned;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EmptyPayload {}
 
