@@ -1,8 +1,12 @@
-use serde::{Serialize, Deserialize};
-use crate::result::{VentedResult, VentedError};
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use std::io::Read;
+
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+
+use crate::result::{VentedError, VentedResult};
+
+pub trait GenericEvent {}
 
 #[cfg(test)]
 mod tests;
@@ -13,29 +17,26 @@ pub struct EmptyPayload {}
 /// A single event that has a name and payload.
 /// The payload is encoded with message pack
 #[derive(Clone, Debug)]
-pub struct Event<T> {
+pub struct Event {
     pub name: String,
-    pub payload: T,
+    pub payload: Vec<u8>,
 }
 
-impl Event<EmptyPayload> {
+impl Event {
     /// Creates a new Event with an empty payload
     pub fn new(name: String) -> Self {
-        Self  {
+        Self {
             name,
-            payload: EmptyPayload {}
+            payload: Vec::with_capacity(0),
         }
     }
 }
 
-impl<T> Event<T> where T: Serialize + DeserializeOwned {
-
+impl Event {
     /// Creates a new Event with a payload
-    pub fn with_payload(name: String, payload: T) -> Self {
-        Self {
-            name,
-            payload,
-        }
+    pub fn with_payload<T: Serialize>(name: String, payload: &T) -> Self {
+        let payload = rmp_serde::encode::to_vec(payload).unwrap();
+        Self { name, payload }
     }
 
     /// Returns the byte representation for the message
@@ -44,15 +45,14 @@ impl<T> Event<T> where T: Serialize + DeserializeOwned {
     /// `name`: `name-length`,
     /// `payload-length`: `u64`,
     /// `payload`: `payload-length`,
-    pub fn to_bytes(&self) -> VentedResult<Vec<u8>> {
-        let mut payload_raw = rmp_serde::to_vec(&self.payload)?;
+    pub fn as_bytes(&mut self) -> VentedResult<Vec<u8>> {
         let mut name_raw = self.name.as_bytes().to_vec();
 
         let name_length = name_raw.len();
         let mut name_length_raw = [0u8; 2];
         BigEndian::write_u16(&mut name_length_raw, name_length as u16);
 
-        let payload_length = payload_raw.len();
+        let payload_length = self.payload.len();
         let mut payload_length_raw = [0u8; 8];
         BigEndian::write_u64(&mut payload_length_raw, payload_length as u64);
 
@@ -61,7 +61,7 @@ impl<T> Event<T> where T: Serialize + DeserializeOwned {
         data.append(&mut name_length_raw.to_vec());
         data.append(&mut name_raw);
         data.append(&mut payload_length_raw.to_vec());
-        data.append(&mut payload_raw);
+        data.append(&mut self.payload);
 
         Ok(data)
     }
@@ -75,11 +75,19 @@ impl<T> Event<T> where T: Serialize + DeserializeOwned {
         let event_name = String::from_utf8(name_buf).map_err(|_| VentedError::NameDecodingError)?;
 
         let payload_length = bytes.read_u64::<BigEndian>()?;
-        let payload = rmp_serde::from_read(bytes.take(payload_length))?;
+        let mut payload = vec![0u8; payload_length as usize];
+        bytes.read_exact(&mut payload)?;
 
         Ok(Self {
             name: event_name,
             payload,
         })
+    }
+
+    /// Returns the payload of the event as a deserialized messagepack value
+    pub fn get_payload<T: DeserializeOwned>(&self) -> VentedResult<T> {
+        let payload = rmp_serde::decode::from_read(&self.payload[..])?;
+
+        Ok(payload)
     }
 }

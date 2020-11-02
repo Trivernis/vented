@@ -1,20 +1,16 @@
-use crate::event::Event;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::collections::HashMap;
+
+use crate::event::Event;
 
 #[cfg(test)]
 mod tests;
 
 /// A handler for events
-pub struct EventHandler<T> {
-    event_handlers: HashMap<String, Vec<Box<dyn Fn(&Event<T>)>>>,
+pub struct EventHandler {
+    event_handlers: HashMap<String, Vec<Box<dyn Fn(Event) -> Option<Event> + Send + Sync>>>,
 }
 
-impl<T> EventHandler<T>
-where
-    T: Serialize + DeserializeOwned,
-{
+impl EventHandler {
     /// Creates a new vented event_handler
     pub fn new() -> Self {
         Self {
@@ -24,8 +20,8 @@ where
 
     /// Adds a handler for the given event
     pub fn on<F: 'static>(&mut self, event_name: &str, handler: F)
-    where
-        F: Fn(&Event<T>),
+        where
+            F: Fn(Event) -> Option<Event> + Send + Sync,
     {
         match self.event_handlers.get_mut(event_name) {
             Some(handlers) => handlers.push(Box::new(handler)),
@@ -37,9 +33,16 @@ where
     }
 
     /// Handles a single event
-    pub fn handle_event(&mut self, event: Event<T>) -> bool {
+    pub fn handle_event(&mut self, event: Event) -> bool {
         if let Some(handlers) = self.event_handlers.get(&event.name) {
-            handlers.iter().for_each(|handler| handler(&event));
+            let mut event = event;
+            for handler in handlers {
+                if let Some(e) = handler(event) {
+                    event = e;
+                } else {
+                    break;
+                }
+            }
 
             true
         } else {
