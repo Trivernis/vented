@@ -1,6 +1,7 @@
 use crate::event::Event;
 use crate::result::VentedResult;
 
+pub(crate) mod server_events;
 pub mod tcp;
 
 pub trait VentedServer {

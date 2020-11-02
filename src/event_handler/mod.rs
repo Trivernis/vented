@@ -20,8 +20,8 @@ impl EventHandler {
 
     /// Adds a handler for the given event
     pub fn on<F: 'static>(&mut self, event_name: &str, handler: F)
-        where
-            F: Fn(Event) -> Option<Event> + Send + Sync,
+    where
+        F: Fn(Event) -> Option<Event> + Send + Sync,
     {
         match self.event_handlers.get_mut(event_name) {
             Some(handlers) => handlers.push(Box::new(handler)),
@@ -33,20 +33,21 @@ impl EventHandler {
     }
 
     /// Handles a single event
-    pub fn handle_event(&mut self, event: Event) -> bool {
+    pub fn handle_event(&mut self, event: Event) -> Option<Event> {
         if let Some(handlers) = self.event_handlers.get(&event.name) {
-            let mut event = event;
+            let mut event = Some(event);
             for handler in handlers {
-                if let Some(e) = handler(event) {
-                    event = e;
+                if let Some(e) = handler(event.unwrap()) {
+                    event = Some(e);
                 } else {
+                    event = None;
                     break;
                 }
             }
 
-            true
+            event
         } else {
-            false
+            None
         }
     }
 }

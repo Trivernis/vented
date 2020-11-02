@@ -14,3 +14,4 @@ serde = { version = "1.0.117", features = ["serde_derive"] }
 byteorder = "1.3.4"
 parking_lot = "0.11.0"
 scheduled-thread-pool = "0.2.5"
+log = "0.4.11"

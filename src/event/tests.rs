@@ -18,7 +18,7 @@ fn it_serializes_events() {
     };
     let payload_raw = rmp_serde::to_vec(&payload).unwrap();
     let mut event = Event::with_payload("test".to_string(), &payload);
-    let event_bytes = event.as_bytes().unwrap();
+    let event_bytes = event.as_bytes();
 
     assert_eq!(event_bytes[0..2], [0x00, 0x04]);
     assert_eq!(event_bytes[6..14], payload_raw.len().to_be_bytes());
@@ -32,7 +32,7 @@ fn it_deserializes_events() {
         float: 2.1,
     };
     let mut event = Event::with_payload("test".to_string(), &payload);
-    let event_bytes = event.as_bytes().unwrap();
+    let event_bytes = event.as_bytes();
 
     let deserialized_event = Event::from_bytes(&mut event_bytes.as_slice()).unwrap();
     assert_eq!(deserialized_event.name, "test".to_string());

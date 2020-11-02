@@ -1,8 +1,8 @@
 use std::io::Read;
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::result::{VentedError, VentedResult};
 
@@ -45,7 +45,7 @@ impl Event {
     /// `name`: `name-length`,
     /// `payload-length`: `u64`,
     /// `payload`: `payload-length`,
-    pub fn as_bytes(&mut self) -> VentedResult<Vec<u8>> {
+    pub fn as_bytes(&mut self) -> Vec<u8> {
         let mut name_raw = self.name.as_bytes().to_vec();
 
         let name_length = name_raw.len();
@@ -63,7 +63,7 @@ impl Event {
         data.append(&mut payload_length_raw.to_vec());
         data.append(&mut self.payload);
 
-        Ok(data)
+        data
     }
 
     /// Deserializes the message from bytes that can be read from the given reader
