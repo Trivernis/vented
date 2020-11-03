@@ -3,6 +3,7 @@ use crate::result::VentedResult;
 
 pub(crate) mod server_events;
 pub mod tcp;
+pub mod tls;
 
 pub trait VentedServer {
     fn listen(&mut self, address: &str) -> VentedResult<()>;
