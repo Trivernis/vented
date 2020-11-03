@@ -33,7 +33,7 @@ impl VentedServer for VentedTcpServer {
     }
 
     /// Registers an event on the internal event handler
-    fn register_handler<F: 'static>(&mut self, event_name: &str, handler: F)
+    fn on<F: 'static>(&mut self, event_name: &str, handler: F)
     where
         F: Fn(Event) -> Option<Event> + Send + Sync,
     {
@@ -59,7 +59,7 @@ impl VentedTcpServer {
     /// Handles what happens on connection
     fn handle_connection(&mut self, mut stream: TcpStream) {
         let handler = Arc::clone(&self.event_handler);
-        self.pool.execute(move || {
+        self.pool.execute(move || loop {
             if let Ok(event) = Event::from_bytes(&mut stream) {
                 if let Some(mut event) = handler.lock().handle_event(event) {
                     if let Err(e) = stream.write(&event.as_bytes()) {
@@ -67,7 +67,8 @@ impl VentedTcpServer {
                     }
                 }
             } else {
-                log::warn!("Failed to create an Event from received bytes.")
+                log::warn!("Failed to create an Event from received bytes.");
+                break;
             }
         });
     }

@@ -3,11 +3,11 @@ use crate::event_handler::EventHandler;
 use crate::result::VentedResult;
 use crate::server::server_events::get_server_event_handler;
 use crate::server::VentedServer;
-use native_tls::{Identity, TlsAcceptor, TlsStream};
+use native_tls::{Identity, TlsAcceptor};
 use parking_lot::Mutex;
 use scheduled_thread_pool::ScheduledThreadPool;
 use std::borrow::BorrowMut;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ impl VentedServer for VentedTlsServer {
         Ok(())
     }
 
-    fn register_handler<F: 'static>(&mut self, event_name: &str, handler: F)
+    fn on<F: 'static>(&mut self, event_name: &str, handler: F)
     where
         F: Fn(Event) -> Option<Event> + Send + Sync,
     {
@@ -59,19 +59,24 @@ impl VentedTlsServer {
         }
     }
 
-    fn handle_connection(&self, mut stream: TcpStream, acceptor: Arc<TlsAcceptor>) {
+    fn handle_connection(&self, stream: TcpStream, acceptor: Arc<TlsAcceptor>) {
         let handler = Arc::clone(&self.event_handler);
         self.pool.execute(move || {
-            acceptor.accept(stream);
-
-            if let Ok(event) = Event::from_bytes(&mut stream) {
-                if let Some(mut event) = handler.lock().handle_event(event) {
-                    if let Err(e) = stream.write(&event.as_bytes()) {
-                        log::error!("Failed to respond to event: {}", e)
+            if let Ok(mut stream) = acceptor.accept(stream) {
+                loop {
+                    if let Ok(event) = Event::from_bytes(&mut stream) {
+                        if let Some(mut event) = handler.lock().handle_event(event) {
+                            if let Err(e) = stream.write(&event.as_bytes()) {
+                                log::error!("Failed to respond to event: {}", e)
+                            }
+                        }
+                    } else {
+                        log::warn!("Failed to create an Event from received bytes.");
+                        break;
                     }
                 }
             } else {
-                log::warn!("Failed to create an Event from received bytes.")
+                log::error!("TLS Error when handling connection")
             }
         });
     }
