@@ -6,6 +6,8 @@ pub type VentedResult<T> = Result<T, VentedError>;
 #[derive(Debug)]
 pub enum VentedError {
     NameDecodingError,
+    NotReady,
+    NotAServer(String),
     IOError(io::Error),
     SerializeError(rmp_serde::encode::Error),
     DeserializeError(rmp_serde::decode::Error),
@@ -24,6 +26,8 @@ impl fmt::Display for VentedError {
             Self::CryptoError(e) => write!(f, "Cryptography Error: {}", e),
             Self::UnexpectedEvent(e) => write!(f, "Received unexpected event: {}", e),
             Self::UnknownNode(n) => write!(f, "Received connection from unknown node: {}", n),
+            Self::NotReady => write!(f, "The connection is still being established."),
+            Self::NotAServer(n) => write!(f, "The given node {} is not a server", n),
         }
     }
 }

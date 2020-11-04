@@ -26,6 +26,7 @@ pub struct CryptoStream {
 impl CryptoStream {
     /// Creates a new crypto stream from a given Tcp Stream and with a given secret
     pub fn new(inner: TcpStream, secret_box: crypto_box::ChaChaBox) -> VentedResult<Self> {
+        inner.set_nonblocking(false)?;
         let send_stream = Arc::new(Mutex::new(inner.try_clone()?));
         let recv_stream = Arc::new(Mutex::new(inner));
 
@@ -66,12 +67,12 @@ impl CryptoStream {
     /// Reads an event from the stream. Blocks until data is received
     pub fn read(&self) -> VentedResult<Event> {
         let mut stream = self.recv_stream.lock();
-        let mut length_raw = [0u8; 64];
+        let mut length_raw = [0u8; 8];
         stream.read_exact(&mut length_raw)?;
 
         let length = BigEndian::read_u64(&length_raw);
         let mut ciphertext = vec![0u8; length as usize];
-        stream.read_exact(&mut ciphertext)?;
+        stream.read(&mut ciphertext)?;
 
         let number = self.recv_count.fetch_add(1, Ordering::SeqCst);
         let nonce = generate_nonce(number);
@@ -91,7 +92,7 @@ impl CryptoStream {
 fn generate_nonce(number: usize) -> GenericArray<u8, U24> {
     let result = sha2::Sha256::digest(&number.to_be_bytes()).to_vec();
     let mut nonce = [0u8; 24];
-    nonce.copy_from_slice(&result);
+    nonce.copy_from_slice(&result[0..24]);
 
     nonce.into()
 }
