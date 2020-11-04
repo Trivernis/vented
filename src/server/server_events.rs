@@ -1,7 +1,11 @@
-use crate::event_handler::EventHandler;
+use serde::{Deserialize, Serialize};
 
-pub(crate) fn get_server_event_handler() -> EventHandler {
-    let handler = EventHandler::new();
+pub(crate) const CONNECT_EVENT: &str = "client:connect";
+pub(crate) const CONN_ACCEPT_EVENT: &str = "server:conn_accept";
+pub(crate) const CONN_REJECT_EVENT: &str = "server:conn_reject";
 
-    handler
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct NodeInformationPayload {
+    pub node_id: String,
+    pub public_key: [u8; 32],
 }
