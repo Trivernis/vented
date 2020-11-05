@@ -13,6 +13,8 @@ use typenum::U24;
 use crate::event::Event;
 use crate::result::VentedResult;
 
+pub use crypto_box::SecretKey;
+
 /// A cryptographical stream object that handles encryption and decryption of streams
 #[derive(Clone)]
 pub struct CryptoStream {

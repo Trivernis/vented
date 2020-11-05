@@ -14,6 +14,7 @@ use crate::server::server_events::{
     AuthPayload, NodeInformationPayload, AUTH_EVENT, CONNECT_EVENT, CONN_ACCEPT_EVENT,
     CONN_CHALLENGE_EVENT, CONN_REJECT_EVENT, READY_EVENT,
 };
+use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
 use std::io::Write;
 use std::sync::Arc;
@@ -24,6 +25,35 @@ pub mod data;
 pub mod server_events;
 
 /// The vented server that provides parallel handling of connections
+/// Usage:
+/// ```rust
+/// use vented::server::VentedServer;
+/// use vented::server::data::Node;
+/// use vented::crypto::SecretKey;
+/// use rand::thread_rng;
+/// use vented::event::Event;
+///
+/// let nodes = vec![
+/// Node {
+///        id: "B".to_string(),
+///        address: None,
+///        public_key: global_secret_b.public_key() // load it from somewhere
+///    },
+///];
+/// // in a real world example the secret key needs to be loaded from somewhere because connections
+/// // with unknown keys are not accepted.
+/// let global_secret = SecretKey::new(&mut thread_rng());
+/// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4);
+///
+///
+/// server.listen("localhost:20000".to_string());
+/// server.on("pong", |_event| {
+///    println!("Pong!");
+///    
+///    None    // the return value is the response event Option<Event>
+/// });
+/// server.emit("B".to_string(), Event::new("ping".to_string())).unwrap();
+/// ```
 pub struct VentedServer {
     connections: Arc<Mutex<HashMap<String, CryptoStream>>>,
     known_nodes: Arc<Mutex<Vec<Node>>>,
@@ -35,6 +65,10 @@ pub struct VentedServer {
 }
 
 impl VentedServer {
+    /// Creates a new vented server with a given node_id and secret key that are
+    /// used to authenticate against other servers.
+    /// The given nodes are used for authentication.
+    /// The server runs with 2x the given amount of threads.
     pub fn new(
         node_id: String,
         secret_key: SecretKey,
@@ -53,14 +87,19 @@ impl VentedServer {
     }
 
     /// Emits an event to the specified Node
-    pub fn emit(&self, node_id: String, event: Event) -> VentedResult<()> {
+    /// The actual writing is done in a separate thread from the thread pool.
+    /// With the returned waitgroup one can wait for the event to be written.
+    pub fn emit(&self, node_id: String, event: Event) -> VentedResult<WaitGroup> {
         let handler = self.connections.lock().get(&node_id).cloned();
+        let wg = WaitGroup::new();
+        let wg2 = WaitGroup::clone(&wg);
 
         if let Some(handler) = handler {
             self.sender_pool.lock().execute(move || {
                 handler.send(event).expect("Failed to send event");
+                std::mem::drop(wg);
             });
-            Ok(())
+            Ok(wg2)
         } else {
             let found_node = self
                 .known_nodes
@@ -73,8 +112,9 @@ impl VentedServer {
                     let handler = self.connect(address.clone())?;
                     self.sender_pool.lock().execute(move || {
                         handler.send(event).expect("Failed to send event");
+                        std::mem::drop(wg);
                     });
-                    Ok(())
+                    Ok(wg2)
                 } else {
                     Err(VentedError::NotAServer(node_id))
                 }
@@ -84,7 +124,10 @@ impl VentedServer {
         }
     }
 
-    /// Adds a handler for the given event
+    /// Adds a handler for the given event.
+    /// The event returned by the handler is returned to the server.
+    /// If there is more than one handler, the response will be piped to the next handler.
+    /// The oder is by order of insertion. The first registered handler will be executed first.
     pub fn on<F: 'static>(&mut self, event_name: &str, handler: F)
     where
         F: Fn(Event) -> Option<Event> + Send + Sync,
@@ -93,11 +136,18 @@ impl VentedServer {
     }
 
     /// Starts listening on the specified address (with port!)
-    pub fn listen(&mut self, address: String) {
+    /// This will cause a new thread to start up so that the method returns immediately
+    /// With the returned wait group one can wait for the server to be ready.
+    /// The method can be called multiple times to start listeners on multiple ports.
+    pub fn listen(&mut self, address: String) -> WaitGroup {
         let context = self.get_server_context();
+        let wg = WaitGroup::new();
+        let wg2 = WaitGroup::clone(&wg);
 
-        thread::spawn(move || match TcpListener::bind(address) {
+        thread::spawn(move || match TcpListener::bind(&address) {
             Ok(listener) => {
+                log::info!("Listener running on {}", address);
+                std::mem::drop(wg);
                 for connection in listener.incoming() {
                     match connection {
                         Ok(stream) => {
@@ -109,8 +159,13 @@ impl VentedServer {
                     }
                 }
             }
-            Err(e) => log::error!("Failed to bind listener: {}", e),
+            Err(e) => {
+                log::error!("Failed to bind listener: {}", e);
+                std::mem::drop(wg);
+            }
         });
+
+        wg2
     }
 
     /// Returns a copy of the servers metadata

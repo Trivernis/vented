@@ -30,8 +30,8 @@ fn test_server_communication() {
     ];
     let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes.clone(), 4);
     let mut server_b = VentedServer::new("B".to_string(), global_secret_b, nodes, 4);
-    server_a.listen("localhost:22222".to_string());
-    thread::sleep(Duration::from_millis(10));
+    let wg = server_a.listen("localhost:22222".to_string());
+    wg.wait();
 
     server_a.on("ping", {
         let ping_count = Arc::clone(&ping_count);
@@ -63,14 +63,15 @@ fn test_server_communication() {
         }
     });
     for _ in 0..10 {
-        server_b
+        let wg = server_b
             .emit("A".to_string(), Event::new("ping".to_string()))
             .unwrap();
-        thread::sleep(Duration::from_millis(10));
+        wg.wait();
     }
-    server_a
+    let wg = server_a
         .emit("B".to_string(), Event::new("pong".to_string()))
         .unwrap();
+    wg.wait();
 
     // wait one second to make sure the servers were able to process the events
     for _ in 0..100 {
