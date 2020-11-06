@@ -1,8 +1,13 @@
 [package]
 name = "vented"
+description = "Event driven encrypted tcp communicaton"
 version = "0.1.0"
 authors = ["trivernis <trivernis@protonmail.com>"]
 edition = "2018"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["tcp", "cryptography", "events"]
+repository = "https://github.com/trivernis/vented"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
