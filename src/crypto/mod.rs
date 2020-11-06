@@ -48,6 +48,7 @@ impl CryptoStream {
     pub fn send(&self, mut event: Event) -> VentedResult<()> {
         let number = self.sent_count.fetch_add(1, Ordering::SeqCst);
         let nonce = generate_nonce(number);
+
         let ciphertext = self.secret_box.lock().encrypt(
             &nonce,
             Payload {
@@ -59,9 +60,13 @@ impl CryptoStream {
         let mut length_raw = [0u8; 8];
         BigEndian::write_u64(&mut length_raw, ciphertext.len() as u64);
 
+        log::trace!("Encoded event '{}' to raw message", event.name);
+
         stream.write(&length_raw)?;
         stream.write(&ciphertext)?;
         stream.flush()?;
+
+        log::trace!("Event sent");
 
         Ok(())
     }
@@ -75,6 +80,7 @@ impl CryptoStream {
         let length = BigEndian::read_u64(&length_raw);
         let mut ciphertext = vec![0u8; length as usize];
         stream.read(&mut ciphertext)?;
+        log::trace!("Received raw message");
 
         let number = self.recv_count.fetch_add(1, Ordering::SeqCst);
         let nonce = generate_nonce(number);
@@ -86,7 +92,10 @@ impl CryptoStream {
             },
         )?;
 
-        Event::from_bytes(&mut &plaintext[..])
+        let event = Event::from_bytes(&mut &plaintext[..])?;
+        log::trace!("Decoded message to event '{}'", event.name);
+
+        Ok(event)
     }
 }
 

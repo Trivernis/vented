@@ -8,8 +8,13 @@ use vented::server::data::Node;
 use vented::server::server_events::READY_EVENT;
 use vented::server::VentedServer;
 
+fn setup() {
+    simple_logger::SimpleLogger::new().init().unwrap();
+}
+
 #[test]
 fn test_server_communication() {
+    setup();
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
     let ready_count = Arc::new(AtomicUsize::new(0));

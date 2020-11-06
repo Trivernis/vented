@@ -24,9 +24,9 @@ pub struct Event {
 
 impl Event {
     /// Creates a new Event with an empty payload
-    pub fn new(name: String) -> Self {
+    pub fn new<S: ToString>(name: S) -> Self {
         Self {
-            name,
+            name: name.to_string(),
             payload: Vec::with_capacity(0),
         }
     }
@@ -34,9 +34,12 @@ impl Event {
 
 impl Event {
     /// Creates a new Event with a payload
-    pub fn with_payload<T: Serialize>(name: String, payload: &T) -> Self {
+    pub fn with_payload<T: Serialize, S: ToString>(name: S, payload: &T) -> Self {
         let payload = rmp_serde::encode::to_vec(payload).unwrap();
-        Self { name, payload }
+        Self {
+            name: name.to_string(),
+            payload,
+        }
     }
 
     /// Returns the byte representation for the message

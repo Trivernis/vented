@@ -14,6 +14,8 @@ pub enum VentedError {
     CryptoError(crypto_box::aead::Error),
     UnexpectedEvent(String),
     UnknownNode(String),
+    Rejected,
+    AuthFailed,
 }
 
 impl fmt::Display for VentedError {
@@ -28,6 +30,8 @@ impl fmt::Display for VentedError {
             Self::UnknownNode(n) => write!(f, "Received connection from unknown node: {}", n),
             Self::NotReady => write!(f, "The connection is still being established."),
             Self::NotAServer(n) => write!(f, "The given node {} is not a server", n),
+            Self::Rejected => write!(f, "The connection was rejected"),
+            Self::AuthFailed => write!(f, "Failed to authenticate the other party"),
         }
     }
 }

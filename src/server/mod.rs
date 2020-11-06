@@ -11,8 +11,8 @@ use crate::result::VentedError::UnknownNode;
 use crate::result::{VentedError, VentedResult};
 use crate::server::data::{Node, ServerConnectionContext};
 use crate::server::server_events::{
-    AuthPayload, NodeInformationPayload, AUTH_EVENT, CONNECT_EVENT, CONN_ACCEPT_EVENT,
-    CONN_CHALLENGE_EVENT, CONN_REJECT_EVENT, READY_EVENT,
+    AuthPayload, ChallengePayload, NodeInformationPayload, ACCEPT_EVENT, AUTH_EVENT,
+    CHALLENGE_EVENT, CONNECT_EVENT, READY_EVENT, REJECT_EVENT,
 };
 use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
@@ -188,7 +188,13 @@ impl VentedServer {
         let event_handler = Arc::clone(&params.event_handler);
 
         pool.lock().execute(move || {
-            let stream = VentedServer::get_crypto_stream(params, stream).expect("Listener failed");
+            let stream = match VentedServer::get_crypto_stream(params, stream) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    log::error!("Failed to establish encrypted connection: {}", e);
+                    return;
+                }
+            };
             event_handler
                 .lock()
                 .handle_event(Event::new(READY_EVENT.to_string()));
@@ -202,19 +208,19 @@ impl VentedServer {
         Ok(())
     }
 
+    /// Establishes a crypto stream for the given stream
     fn get_crypto_stream(
         params: ServerConnectionContext,
-        mut stream: TcpStream,
+        stream: TcpStream,
     ) -> VentedResult<CryptoStream> {
-        let (node_id, secret_box) = VentedServer::perform_key_exchange(
+        let (node_id, stream) = VentedServer::perform_key_exchange(
             params.is_server,
-            &mut stream,
+            stream,
             params.node_id.clone(),
             params.global_secret,
             params.known_nodes,
         )?;
 
-        let stream = CryptoStream::new(stream, secret_box)?;
         params
             .connections
             .lock()
@@ -251,11 +257,11 @@ impl VentedServer {
     /// Performs a key exchange
     fn perform_key_exchange(
         is_server: bool,
-        stream: &mut TcpStream,
+        stream: TcpStream,
         own_node_id: String,
         global_secret: SecretKey,
         known_nodes: Arc<Mutex<Vec<Node>>>,
-    ) -> VentedResult<(String, ChaChaBox)> {
+    ) -> VentedResult<(String, CryptoStream)> {
         let secret_key = SecretKey::generate(&mut rand::thread_rng());
         if is_server {
             Self::perform_server_key_exchange(
@@ -278,15 +284,15 @@ impl VentedServer {
 
     /// Performs the client side DH key exchange
     fn perform_client_key_exchange(
-        mut stream: &mut TcpStream,
+        mut stream: TcpStream,
         secret_key: &SecretKey,
         own_node_id: String,
         global_secret: SecretKey,
         known_nodes: Arc<Mutex<Vec<Node>>>,
-    ) -> VentedResult<(String, ChaChaBox)> {
+    ) -> VentedResult<(String, CryptoStream)> {
         stream.write(
             &Event::with_payload(
-                CONNECT_EVENT.to_string(),
+                CONNECT_EVENT,
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
                     node_id: own_node_id,
@@ -296,59 +302,45 @@ impl VentedServer {
         )?;
         stream.flush()?;
         let event = Event::from_bytes(&mut stream)?;
-        if event.name != CONN_CHALLENGE_EVENT {
-            return Err(VentedError::UnknownNode(event.name));
+        if event.name != CONNECT_EVENT {
+            return Err(VentedError::UnexpectedEvent(event.name));
         }
         let NodeInformationPayload {
             public_key,
             node_id,
         } = event.get_payload::<NodeInformationPayload>().unwrap();
+
         let public_key = PublicKey::from(public_key);
-        let shared_auth_secret =
-            StaticSecret::from(global_secret.to_bytes()).diffie_hellman(&public_key);
-
-        stream.write(
-            &Event::with_payload(
-                AUTH_EVENT.to_string(),
-                &AuthPayload {
-                    calculated_secret: shared_auth_secret.to_bytes(),
-                },
-            )
-            .as_bytes(),
-        )?;
-
-        let event = Event::from_bytes(&mut stream)?;
-        if event.name != CONN_ACCEPT_EVENT {
-            return Err(VentedError::UnknownNode(event.name));
-        }
-        let known_nodes = known_nodes.lock();
-        let node_static_info = event.get_payload::<NodeInformationPayload>()?;
-        let node_data = if let Some(data) = known_nodes
-            .iter()
-            .find(|n| n.id == node_static_info.node_id)
-        {
-            data.clone()
-        } else {
-            return Err(UnknownNode(node_id));
-        };
-        if node_data.public_key.to_bytes() != node_static_info.public_key {
-            return Err(UnknownNode(node_id));
-        }
-
         let secret_box = ChaChaBox::new(&public_key, &secret_key);
 
-        Ok((node_id, secret_box))
+        let node_data = if let Some(data) = known_nodes.lock().iter().find(|n| n.id == node_id) {
+            data.clone()
+        } else {
+            stream.write(&Event::new(REJECT_EVENT).as_bytes())?;
+            stream.flush()?;
+            return Err(UnknownNode(node_id));
+        };
+
+        let mut stream = CryptoStream::new(stream, secret_box)?;
+
+        log::trace!("Authenticating recipient...");
+        Self::authenticate_other(&mut stream, node_data.public_key)?;
+        log::trace!("Authenticating self...");
+        Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
+        log::trace!("Connection fully authenticated.");
+
+        Ok((node_id, stream))
     }
 
     /// Performs a DH key exchange by using the crypto_box module and events
     /// On success it returns a secret box with the established secret and the node id of the client
     fn perform_server_key_exchange(
-        mut stream: &mut TcpStream,
+        mut stream: TcpStream,
         secret_key: &SecretKey,
         own_node_id: String,
         global_secret: SecretKey,
         known_nodes: Arc<Mutex<Vec<Node>>>,
-    ) -> VentedResult<(String, ChaChaBox)> {
+    ) -> VentedResult<(String, CryptoStream)> {
         let event = Event::from_bytes(&mut stream)?;
         if event.name != CONNECT_EVENT {
             return Err(VentedError::UnexpectedEvent(event.name));
@@ -359,54 +351,96 @@ impl VentedServer {
         } = event.get_payload::<NodeInformationPayload>().unwrap();
         let public_key = PublicKey::from(public_key);
 
-        let known_nodes = known_nodes.lock();
-        let node_data = if let Some(data) = known_nodes.iter().find(|n| n.id == node_id) {
+        let node_data = if let Some(data) = known_nodes.lock().iter().find(|n| n.id == node_id) {
             data.clone()
         } else {
-            stream.write(&Event::new(CONN_REJECT_EVENT.to_string()).as_bytes())?;
+            stream.write(&Event::new(REJECT_EVENT).as_bytes())?;
             stream.flush()?;
             return Err(UnknownNode(node_id));
         };
 
-        let secret_box = ChaChaBox::new(&public_key, &secret_key);
         stream.write(
             &Event::with_payload(
-                CONN_CHALLENGE_EVENT.to_string(),
+                CONNECT_EVENT,
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
-                    node_id: own_node_id.clone(),
+                    node_id: own_node_id,
                 },
             )
             .as_bytes(),
         )?;
         stream.flush()?;
-        let auth_event = Event::from_bytes(&mut stream)?;
+        let secret_box = ChaChaBox::new(&public_key, &secret_key);
+        let mut stream = CryptoStream::new(stream, secret_box)?;
+
+        log::trace!("Authenticating self...");
+        Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
+        log::trace!("Authenticating recipient...");
+        Self::authenticate_other(&mut stream, node_data.public_key)?;
+        log::trace!("Connection fully authenticated.");
+
+        Ok((node_id, stream))
+    }
+
+    /// Performs the challenged side of the authentication challenge
+    fn authenticate_self(stream: &CryptoStream, static_secret: StaticSecret) -> VentedResult<()> {
+        let challenge_event = stream.read()?;
+
+        if challenge_event.name != CHALLENGE_EVENT {
+            stream.send(Event::new(REJECT_EVENT))?;
+            return Err(VentedError::UnexpectedEvent(challenge_event.name));
+        }
+        let ChallengePayload { public_key } = challenge_event.get_payload()?;
+        let auth_key = static_secret.diffie_hellman(&PublicKey::from(public_key));
+
+        stream.send(Event::with_payload(
+            AUTH_EVENT,
+            &AuthPayload {
+                calculated_secret: auth_key.to_bytes(),
+            },
+        ))?;
+
+        let response = stream.read()?;
+
+        match response.name.as_str() {
+            ACCEPT_EVENT => Ok(()),
+            REJECT_EVENT => Err(VentedError::Rejected),
+            _ => {
+                stream.send(Event::new(REJECT_EVENT))?;
+                Err(VentedError::UnexpectedEvent(response.name))
+            }
+        }
+    }
+
+    /// Authenticates the other party by using their stored public key and a generated secret
+    fn authenticate_other(
+        stream: &CryptoStream,
+        other_static_public: PublicKey,
+    ) -> VentedResult<()> {
+        let auth_secret = SecretKey::generate(&mut rand::thread_rng());
+        stream.send(Event::with_payload(
+            CHALLENGE_EVENT,
+            &ChallengePayload {
+                public_key: auth_secret.public_key().to_bytes(),
+            },
+        ))?;
+
+        let auth_event = stream.read()?;
 
         if auth_event.name != AUTH_EVENT {
+            stream.send(Event::new(REJECT_EVENT))?;
             return Err(VentedError::UnexpectedEvent(auth_event.name));
         }
-        let AuthPayload { calculated_secret } = auth_event.get_payload::<AuthPayload>()?;
+        let AuthPayload { calculated_secret } = auth_event.get_payload()?;
         let expected_secret =
-            StaticSecret::from(secret_key.to_bytes()).diffie_hellman(&node_data.public_key);
+            StaticSecret::from(auth_secret.to_bytes()).diffie_hellman(&other_static_public);
 
         if expected_secret.to_bytes() != calculated_secret {
-            stream.write(&Event::new(CONN_REJECT_EVENT.to_string()).as_bytes())?;
-            stream.flush()?;
-            return Err(UnknownNode(node_id));
+            stream.send(Event::new(REJECT_EVENT))?;
+            Err(VentedError::AuthFailed)
         } else {
-            stream.write(
-                &Event::with_payload(
-                    CONN_ACCEPT_EVENT.to_string(),
-                    &NodeInformationPayload {
-                        node_id: own_node_id,
-                        public_key: global_secret.public_key().to_bytes(),
-                    },
-                )
-                .as_bytes(),
-            )?;
-            stream.flush()?;
+            stream.send(Event::new(ACCEPT_EVENT))?;
+            Ok(())
         }
-
-        Ok((node_id, secret_box))
     }
 }
