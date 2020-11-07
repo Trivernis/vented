@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -13,6 +12,7 @@ use typenum::U24;
 use crate::event::Event;
 use crate::result::VentedResult;
 
+use crypto_box::ChaChaBox;
 pub use crypto_box::PublicKey;
 pub use crypto_box::SecretKey;
 
@@ -21,24 +21,28 @@ pub use crypto_box::SecretKey;
 pub struct CryptoStream {
     send_stream: Arc<Mutex<TcpStream>>,
     recv_stream: Arc<Mutex<TcpStream>>,
-    sent_count: Arc<AtomicUsize>,
-    recv_count: Arc<AtomicUsize>,
-    secret_box: Arc<Mutex<crypto_box::ChaChaBox>>,
+    send_secret: Arc<Mutex<EncryptionBox<ChaChaBox>>>,
+    recv_secret: Arc<Mutex<EncryptionBox<ChaChaBox>>>,
 }
 
 impl CryptoStream {
     /// Creates a new crypto stream from a given Tcp Stream and with a given secret
-    pub fn new(inner: TcpStream, secret_box: crypto_box::ChaChaBox) -> VentedResult<Self> {
+    pub fn new(
+        inner: TcpStream,
+        public_key: &PublicKey,
+        secret_key: &SecretKey,
+    ) -> VentedResult<Self> {
         inner.set_nonblocking(false)?;
         let send_stream = Arc::new(Mutex::new(inner.try_clone()?));
         let recv_stream = Arc::new(Mutex::new(inner));
+        let send_box = EncryptionBox::new(ChaChaBox::new(public_key, secret_key));
+        let recv_box = EncryptionBox::new(ChaChaBox::new(public_key, secret_key));
 
         Ok(Self {
             send_stream,
             recv_stream,
-            sent_count: Arc::new(AtomicUsize::new(0)),
-            recv_count: Arc::new(AtomicUsize::new(0)),
-            secret_box: Arc::new(Mutex::new(secret_box)),
+            send_secret: Arc::new(Mutex::new(send_box)),
+            recv_secret: Arc::new(Mutex::new(recv_box)),
         })
     }
 
@@ -47,16 +51,7 @@ impl CryptoStream {
     /// length: u64
     /// data: length
     pub fn send(&self, mut event: Event) -> VentedResult<()> {
-        let number = self.sent_count.fetch_add(1, Ordering::SeqCst);
-        let nonce = generate_nonce(number);
-
-        let ciphertext = self.secret_box.lock().encrypt(
-            &nonce,
-            Payload {
-                msg: &event.as_bytes(),
-                aad: &[],
-            },
-        )?;
+        let ciphertext = self.send_secret.lock().encrypt(&event.as_bytes())?;
         let mut stream = self.send_stream.lock();
         let mut length_raw = [0u8; 8];
         BigEndian::write_u64(&mut length_raw, ciphertext.len() as u64);
@@ -83,20 +78,78 @@ impl CryptoStream {
         stream.read(&mut ciphertext)?;
         log::trace!("Received raw message");
 
-        let number = self.recv_count.fetch_add(1, Ordering::SeqCst);
-        let nonce = generate_nonce(number);
-        let plaintext = self.secret_box.lock().decrypt(
-            &nonce,
-            Payload {
-                msg: &ciphertext,
-                aad: &[],
-            },
-        )?;
+        let plaintext = self.recv_secret.lock().decrypt(&ciphertext)?;
 
         let event = Event::from_bytes(&mut &plaintext[..])?;
         log::trace!("Decoded message to event '{}'", event.name);
 
         Ok(event)
+    }
+
+    /// Updates the keys in the inner encryption box
+    pub fn update_key(&self, secret_key: &SecretKey, public_key: &PublicKey) {
+        let send_box = ChaChaBox::new(public_key, secret_key);
+        let recv_box = ChaChaBox::new(public_key, secret_key);
+        self.send_secret.lock().swap_box(send_box);
+        self.recv_secret.lock().swap_box(recv_box);
+        log::trace!("Updated secret");
+    }
+}
+
+pub struct EncryptionBox<T>
+where
+    T: Aead,
+{
+    inner: T,
+    counter: usize,
+}
+
+impl<T> EncryptionBox<T>
+where
+    T: Aead,
+{
+    /// Creates a new encryption box with the given inner value
+    pub fn new(inner: T) -> Self {
+        Self { inner, counter: 0 }
+    }
+
+    /// Swaps the crypto box for a new one
+    pub fn swap_box(&mut self, new_box: T) {
+        self.inner = new_box;
+    }
+}
+
+impl EncryptionBox<ChaChaBox> {
+    /// Encrypts the given data by using the inner ChaCha box and nonce
+    pub fn encrypt(&mut self, data: &[u8]) -> VentedResult<Vec<u8>> {
+        let nonce = generate_nonce(self.counter);
+
+        let ciphertext = self.inner.encrypt(
+            &nonce,
+            Payload {
+                aad: &[],
+                msg: data,
+            },
+        )?;
+        self.counter += 1;
+
+        Ok(ciphertext)
+    }
+
+    /// Decrypts the data by using the inner ChaCha box and nonce
+    pub fn decrypt(&mut self, data: &[u8]) -> VentedResult<Vec<u8>> {
+        let nonce = generate_nonce(self.counter);
+
+        let plaintext = self.inner.decrypt(
+            &nonce,
+            Payload {
+                msg: data,
+                aad: &[],
+            },
+        )?;
+        self.counter += 1;
+
+        Ok(plaintext)
     }
 }
 

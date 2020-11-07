@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 
-use crypto_box::{ChaChaBox, PublicKey, SecretKey};
+use crypto_box::{PublicKey, SecretKey};
 use scheduled_thread_pool::ScheduledThreadPool;
 
 use crate::crypto::CryptoStream;
@@ -16,6 +16,7 @@ use crate::server::server_events::{
 };
 use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
+use sha2::Digest;
 use std::io::Write;
 use std::sync::Arc;
 use std::thread;
@@ -327,7 +328,6 @@ impl VentedServer {
         }
 
         let public_key = PublicKey::from(public_key);
-        let secret_box = ChaChaBox::new(&public_key, &secret_key);
 
         let node_data = if let Some(data) = known_nodes.lock().iter().find(|n| n.id == node_id) {
             data.clone()
@@ -337,13 +337,20 @@ impl VentedServer {
             return Err(UnknownNode(node_id));
         };
 
-        let mut stream = CryptoStream::new(stream, secret_box)?;
+        let mut stream = CryptoStream::new(stream, &public_key, &secret_key)?;
 
         log::trace!("Authenticating recipient...");
-        Self::authenticate_other(&mut stream, node_data.public_key)?;
+        let key_a = Self::authenticate_other(&mut stream, node_data.public_key)?;
         log::trace!("Authenticating self...");
-        Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
+        let key_b =
+            Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
         log::trace!("Connection fully authenticated.");
+
+        let pre_secret = StaticSecret::from(secret_key.to_bytes()).diffie_hellman(&public_key);
+        let final_secret =
+            Self::generate_final_secret(pre_secret.to_bytes().to_vec(), key_a, key_b);
+        let final_public = final_secret.public_key();
+        stream.update_key(&final_secret, &final_public);
 
         Ok((node_id, stream))
     }
@@ -400,20 +407,30 @@ impl VentedServer {
             .as_bytes(),
         )?;
         stream.flush()?;
-        let secret_box = ChaChaBox::new(&public_key, &secret_key);
-        let mut stream = CryptoStream::new(stream, secret_box)?;
+
+        let mut stream = CryptoStream::new(stream, &public_key, &secret_key)?;
 
         log::trace!("Authenticating self...");
-        Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
+        let key_a =
+            Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
         log::trace!("Authenticating recipient...");
-        Self::authenticate_other(&mut stream, node_data.public_key)?;
+        let key_b = Self::authenticate_other(&mut stream, node_data.public_key)?;
         log::trace!("Connection fully authenticated.");
+
+        let pre_secret = StaticSecret::from(secret_key.to_bytes()).diffie_hellman(&public_key);
+        let final_secret =
+            Self::generate_final_secret(pre_secret.to_bytes().to_vec(), key_a, key_b);
+        let final_public = final_secret.public_key();
+        stream.update_key(&final_secret, &final_public);
 
         Ok((node_id, stream))
     }
 
     /// Performs the challenged side of the authentication challenge
-    fn authenticate_self(stream: &CryptoStream, static_secret: StaticSecret) -> VentedResult<()> {
+    fn authenticate_self(
+        stream: &CryptoStream,
+        static_secret: StaticSecret,
+    ) -> VentedResult<Vec<u8>> {
         let challenge_event = stream.read()?;
 
         if challenge_event.name != CHALLENGE_EVENT {
@@ -433,7 +450,7 @@ impl VentedServer {
         let response = stream.read()?;
 
         match response.name.as_str() {
-            ACCEPT_EVENT => Ok(()),
+            ACCEPT_EVENT => Ok(auth_key.to_bytes().to_vec()),
             REJECT_EVENT => Err(VentedError::Rejected),
             _ => {
                 stream.send(Event::new(REJECT_EVENT))?;
@@ -446,7 +463,7 @@ impl VentedServer {
     fn authenticate_other(
         stream: &CryptoStream,
         other_static_public: PublicKey,
-    ) -> VentedResult<()> {
+    ) -> VentedResult<Vec<u8>> {
         let auth_secret = SecretKey::generate(&mut rand::thread_rng());
         stream.send(Event::with_payload(
             CHALLENGE_EVENT,
@@ -470,7 +487,7 @@ impl VentedServer {
             Err(VentedError::AuthFailed)
         } else {
             stream.send(Event::new(ACCEPT_EVENT))?;
-            Ok(())
+            Ok(calculated_secret.to_vec())
         }
     }
 
@@ -480,5 +497,22 @@ impl VentedServer {
         let parts_b = b.split('.').collect::<Vec<&str>>();
 
         parts_a.get(0) == parts_b.get(0) && parts_a.get(1) == parts_b.get(1)
+    }
+
+    /// Generates a secret from handshake components
+    fn generate_final_secret(
+        mut pre_secret: Vec<u8>,
+        mut key_a: Vec<u8>,
+        mut key_b: Vec<u8>,
+    ) -> SecretKey {
+        let mut secret_data = Vec::new();
+        secret_data.append(&mut pre_secret);
+        secret_data.append(&mut key_a);
+        secret_data.append(&mut key_b);
+        let final_secret = sha2::Sha256::digest(&secret_data).to_vec();
+        let mut final_secret_arr = [0u8; 32];
+        final_secret_arr.copy_from_slice(&final_secret[..]);
+
+        SecretKey::from(final_secret_arr)
     }
 }
