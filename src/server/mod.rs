@@ -107,15 +107,19 @@ impl VentedServer {
 
     /// Emits an event to the specified Node
     /// The actual writing is done in a separate thread from the thread pool.
-    /// With the returned waitgroup one can wait for the event to be written.
+    /// With the returned wait group one can wait for the event to be written.
     pub fn emit(&self, node_id: String, event: Event) -> VentedResult<WaitGroup> {
         let handler = self.connections.lock().get(&node_id).cloned();
         let wg = WaitGroup::new();
         let wg2 = WaitGroup::clone(&wg);
 
         if let Some(handler) = handler {
+            let connections = Arc::clone(&self.connections);
             self.sender_pool.lock().execute(move || {
-                handler.send(event).expect("Failed to send event");
+                if let Err(e) = handler.send(event) {
+                    log::error!("Failed to send event: {}", e);
+                    connections.lock().remove(handler.receiver_node());
+                }
                 std::mem::drop(wg);
             });
             Ok(wg2)
@@ -207,6 +211,7 @@ impl VentedServer {
         let event_handler = Arc::clone(&params.event_handler);
 
         pool.lock().execute(move || {
+            let connections = Arc::clone(&params.connections);
             let stream = match VentedServer::get_crypto_stream(params, stream) {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -219,9 +224,13 @@ impl VentedServer {
                 .handle_event(Event::new(READY_EVENT.to_string()));
             while let Ok(event) = stream.read() {
                 if let Some(response) = event_handler.lock().handle_event(event) {
-                    stream.send(response).expect("Failed to send response");
+                    if let Err(e) = stream.send(response) {
+                        log::error!("Failed to send response event: {}", e);
+                        break;
+                    }
                 }
             }
+            connections.lock().remove(stream.receiver_node());
         });
 
         Ok(())
@@ -254,6 +263,7 @@ impl VentedServer {
         let mut context = self.get_server_context();
         context.is_server = false;
 
+        let connections = Arc::clone(&context.connections);
         let stream = Self::get_crypto_stream(context, stream)?;
         self.listener_pool.lock().execute({
             let stream = CryptoStream::clone(&stream);
@@ -261,9 +271,13 @@ impl VentedServer {
             move || {
                 while let Ok(event) = stream.read() {
                     if let Some(response) = event_handler.lock().handle_event(event) {
-                        stream.send(response).expect("Failed to send response");
+                        if let Err(e) = stream.send(response) {
+                            log::error!("Failed to send response event: {}", e);
+                            break;
+                        }
                     }
                 }
+                connections.lock().remove(stream.receiver_node());
             }
         });
         self.event_handler
@@ -353,7 +367,7 @@ impl VentedServer {
             return Err(UnknownNode(node_id));
         };
 
-        let mut stream = CryptoStream::new(stream, &public_key, &secret_key)?;
+        let mut stream = CryptoStream::new(node_id.clone(), stream, &public_key, &secret_key)?;
 
         log::trace!("Authenticating recipient...");
         let key_a = Self::authenticate_other(&mut stream, node_data.public_key)?;
@@ -424,7 +438,7 @@ impl VentedServer {
         )?;
         stream.flush()?;
 
-        let mut stream = CryptoStream::new(stream, &public_key, &secret_key)?;
+        let mut stream = CryptoStream::new(node_id.clone(), stream, &public_key, &secret_key)?;
 
         log::trace!("Authenticating self...");
         let key_a =

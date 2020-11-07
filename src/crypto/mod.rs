@@ -19,6 +19,7 @@ pub use crypto_box::SecretKey;
 /// A cryptographical stream object that handles encryption and decryption of streams
 #[derive(Clone)]
 pub struct CryptoStream {
+    recv_node_id: String,
     send_stream: Arc<Mutex<TcpStream>>,
     recv_stream: Arc<Mutex<TcpStream>>,
     send_secret: Arc<Mutex<EncryptionBox<ChaChaBox>>>,
@@ -28,6 +29,7 @@ pub struct CryptoStream {
 impl CryptoStream {
     /// Creates a new crypto stream from a given Tcp Stream and with a given secret
     pub fn new(
+        node_id: String,
         inner: TcpStream,
         public_key: &PublicKey,
         secret_key: &SecretKey,
@@ -39,6 +41,7 @@ impl CryptoStream {
         let recv_box = EncryptionBox::new(ChaChaBox::new(public_key, secret_key));
 
         Ok(Self {
+            recv_node_id: node_id,
             send_stream,
             recv_stream,
             send_secret: Arc::new(Mutex::new(send_box)),
@@ -93,6 +96,10 @@ impl CryptoStream {
         self.send_secret.lock().swap_box(send_box);
         self.recv_secret.lock().swap_box(recv_box);
         log::trace!("Updated secret");
+    }
+
+    pub fn receiver_node(&self) -> &String {
+        &self.recv_node_id
     }
 }
 
