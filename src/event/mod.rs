@@ -16,7 +16,7 @@ pub struct EmptyPayload {}
 
 /// A single event that has a name and payload.
 /// The payload is encoded with message pack
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
     pub name: String,
     pub payload: Vec<u8>,

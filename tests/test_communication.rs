@@ -98,16 +98,17 @@ fn test_server_communication() {
         .emit("B".to_string(), Event::new("pong".to_string()))
         .unwrap();
     wg.wait();
-    assert!(server_b
+    let wg = server_b
         .emit("C".to_string(), Event::new("ping".to_string()))
-        .is_err());
+        .unwrap();
+    wg.wait();
 
     // wait one second to make sure the servers were able to process the events
     for _ in 0..100 {
         thread::sleep(Duration::from_millis(10));
     }
 
-    assert_eq!(ping_c_count.load(Ordering::SeqCst), 0);
+    assert_eq!(ping_c_count.load(Ordering::SeqCst), 1);
     assert_eq!(ready_count.load(Ordering::SeqCst), 3);
     assert_eq!(ping_count.load(Ordering::SeqCst), 10);
     assert_eq!(pong_count.load(Ordering::SeqCst), 10);

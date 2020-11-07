@@ -11,8 +11,10 @@ use crate::result::VentedError::UnknownNode;
 use crate::result::{VentedError, VentedResult};
 use crate::server::data::{Future, Node, ServerConnectionContext};
 use crate::server::server_events::{
-    AuthPayload, ChallengePayload, NodeInformationPayload, VersionMismatchPayload, ACCEPT_EVENT,
-    AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT, REJECT_EVENT,
+    AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload,
+    RedirectResponsePayload, VersionMismatchPayload, ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT,
+    CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT, REDIRECT_CONFIRM_EVENT, REDIRECT_EVENT,
+    REDIRECT_FAIL_EVENT, REDIRECT_REDIRECTED_EVENT, REJECT_EVENT,
 };
 use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
@@ -69,6 +71,7 @@ pub struct VentedServer {
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
+    redirect_handles: Arc<Mutex<HashMap<[u8; 16], Future<bool>>>>,
 }
 
 impl VentedServer {
@@ -82,7 +85,7 @@ impl VentedServer {
         nodes: Vec<Node>,
         num_threads: usize,
     ) -> Self {
-        Self {
+        let mut server = Self {
             node_id,
             event_handler: Arc::new(Mutex::new(EventHandler::new())),
             listener_pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
@@ -97,7 +100,11 @@ impl VentedServer {
             forwarded_connections: Arc::new(Mutex::new(HashMap::new())),
             global_secret_key: secret_key,
             known_nodes: Arc::new(Mutex::new(nodes)),
-        }
+            redirect_handles: Arc::new(Mutex::new(HashMap::new())),
+        };
+        server.register_events();
+
+        server
     }
 
     /// Returns the nodeId of the server
@@ -115,19 +122,24 @@ impl VentedServer {
     /// With the returned wait group one can wait for the event to be written.
     pub fn emit(&self, node_id: String, event: Event) -> VentedResult<WaitGroup> {
         let wg = WaitGroup::new();
-        let stream = self.get_connection(node_id)?;
-
-        self.sender_pool.lock().execute({
-            let wg = WaitGroup::clone(&wg);
-            let connections = Arc::clone(&self.connections);
-            move || {
-                if let Err(e) = stream.send(event) {
-                    log::error!("Failed to send event: {}", e);
-                    connections.lock().remove(stream.receiver_node());
+        if let Ok(stream) = self.get_connection(&node_id) {
+            self.sender_pool.lock().execute({
+                let wg = WaitGroup::clone(&wg);
+                let connections = Arc::clone(&self.connections);
+                move || {
+                    if let Err(e) = stream.send(event) {
+                        log::error!("Failed to send event: {}", e);
+                        connections.lock().remove(stream.receiver_node());
+                    }
+                    std::mem::drop(wg);
                 }
-                std::mem::drop(wg);
-            }
-        });
+            });
+        } else {
+            log::trace!(
+                "Trying to redirect the event to a different node to be sent to target node..."
+            );
+            self.send_event_redirected(node_id, event)?;
+        }
 
         Ok(wg)
     }
@@ -177,6 +189,88 @@ impl VentedServer {
         wg2
     }
 
+    /// Registers default server events
+    fn register_events(&mut self) {
+        self.on(REDIRECT_CONFIRM_EVENT, {
+            let redirect_handles = Arc::clone(&self.redirect_handles);
+            move |event| {
+                let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
+                let mut future = redirect_handles.lock().remove(&payload.id)?;
+                future.set_value(true);
+
+                None
+            }
+        });
+        self.on(REDIRECT_FAIL_EVENT, {
+            let redirect_handles = Arc::clone(&self.redirect_handles);
+            move |event| {
+                let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
+                let mut future = redirect_handles.lock().remove(&payload.id)?;
+                future.set_value(false);
+
+                None
+            }
+        });
+        self.on(REDIRECT_EVENT, {
+            let connections = Arc::clone(&self.connections);
+
+            move |event| {
+                let payload = event.get_payload::<RedirectPayload>().ok()?;
+                let stream = connections.lock().get(&payload.target)?.clone();
+                if stream
+                    .send(Event::with_payload(REDIRECT_REDIRECTED_EVENT, &payload))
+                    .is_ok()
+                {
+                    Some(Event::with_payload(
+                        REDIRECT_CONFIRM_EVENT,
+                        &RedirectResponsePayload { id: payload.id },
+                    ))
+                } else {
+                    Some(Event::with_payload(
+                        REDIRECT_FAIL_EVENT,
+                        &RedirectResponsePayload { id: payload.id },
+                    ))
+                }
+            }
+        });
+        self.on(REDIRECT_REDIRECTED_EVENT, {
+            let event_handler = Arc::clone(&self.event_handler);
+            let connections = Arc::clone(&self.connections);
+            let pool = Arc::clone(&self.sender_pool);
+
+            move |event| {
+                let payload = event.get_payload::<RedirectPayload>().ok()?;
+                let event = Event::from_bytes(&mut &payload.content[..]).ok()?;
+                let proxy_stream = connections.lock().get(&payload.proxy)?.clone();
+
+                pool.lock().execute({
+                    let event_handler = Arc::clone(&event_handler);
+                    move || {
+                        let response = event_handler.lock().handle_event(event);
+                        let event = response.map(|mut value| {
+                            Event::with_payload(
+                                REDIRECT_EVENT,
+                                &RedirectPayload::new(
+                                    payload.target,
+                                    payload.proxy,
+                                    payload.source,
+                                    value.as_bytes(),
+                                ),
+                            )
+                        });
+                        if let Some(event) = event {
+                            proxy_stream
+                                .send(event)
+                                .expect("Failed to respond to redirected event.");
+                        }
+                    }
+                });
+
+                None
+            }
+        })
+    }
+
     /// Returns a copy of the servers metadata
     fn get_server_context(&self) -> ServerConnectionContext {
         ServerConnectionContext {
@@ -189,6 +283,36 @@ impl VentedServer {
             listener_pool: Arc::clone(&self.listener_pool),
             forwarded_connections: Arc::clone(&self.forwarded_connections),
         }
+    }
+
+    /// Tries to send an event redirected by emitting a redirect event to all public nodes
+    fn send_event_redirected(&self, target: String, event: Event) -> VentedResult<()> {
+        let public_nodes = self
+            .known_nodes
+            .lock()
+            .iter()
+            .filter(|node| node.address.is_some())
+            .cloned()
+            .collect::<Vec<Node>>();
+        for node in public_nodes {
+            let payload = RedirectPayload::new(
+                self.node_id.clone(),
+                node.id.clone(),
+                target.clone(),
+                event.clone().as_bytes(),
+            );
+            let mut future = Future::new();
+            self.redirect_handles
+                .lock()
+                .insert(payload.id, Future::clone(&future));
+            self.emit(node.id, Event::with_payload(REDIRECT_EVENT, &payload))?;
+
+            if future.get_value() {
+                return Ok(());
+            }
+        }
+
+        Err(VentedError::UnknownNode(target))
     }
 
     /// Handles a single connection by first performing a key exchange and
@@ -240,9 +364,9 @@ impl VentedServer {
     /// Takes three attempts to retrieve a connection for the given node.
     /// First it tries to use the already established connection stored in the shared connections vector.
     /// If that fails it tries to establish a new connection to the node by using the known address
-    fn get_connection(&self, target: String) -> VentedResult<CryptoStream> {
+    fn get_connection(&self, target: &String) -> VentedResult<CryptoStream> {
         log::trace!("Trying to connect to {}", target);
-        if let Some(stream) = self.connections.lock().get(&target) {
+        if let Some(stream) = self.connections.lock().get(target) {
             log::trace!("Reusing existing connection.");
             return Ok(CryptoStream::clone(stream));
         }
@@ -251,7 +375,7 @@ impl VentedServer {
             self.known_nodes
                 .lock()
                 .iter()
-                .find(|node| node.id == target)
+                .find(|node| &node.id == target)
                 .cloned()
                 .ok_or(VentedError::UnknownNode(target.clone()))?
         };
@@ -267,7 +391,7 @@ impl VentedServer {
 
         log::debug!("All connection attempts to {} failed!", target);
 
-        Err(VentedError::NotAServer(target))
+        Err(VentedError::NotAServer(target.clone()))
     }
 
     /// Establishes a crypto stream for the given stream

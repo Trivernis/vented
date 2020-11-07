@@ -43,14 +43,6 @@ impl<T> Future<T> {
         }
     }
 
-    /// Creates the future with an already resolved value
-    pub fn with_value(value: T) -> Self {
-        Self {
-            value: Arc::new(Mutex::new(Some(value))),
-            wg: None,
-        }
-    }
-
     /// Sets the value of the future consuming the wait group
     pub fn set_value(&mut self, value: T) {
         self.value.lock().replace(value);
