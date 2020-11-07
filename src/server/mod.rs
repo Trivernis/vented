@@ -307,12 +307,14 @@ impl VentedServer {
                 .insert(payload.id, Future::clone(&future));
             self.emit(node.id, Event::with_payload(REDIRECT_EVENT, &payload))?;
 
-            if future.get_value() {
-                return Ok(());
+            if let Some(value) = future.get_value_with_timeout(1000) {
+                if value {
+                    return Ok(());
+                }
             }
         }
 
-        Err(VentedError::UnknownNode(target))
+        Err(VentedError::UnreachableNode(target))
     }
 
     /// Handles a single connection by first performing a key exchange and
@@ -391,7 +393,7 @@ impl VentedServer {
 
         log::debug!("All connection attempts to {} failed!", target);
 
-        Err(VentedError::NotAServer(target.clone()))
+        Err(VentedError::UnreachableNode(target.clone()))
     }
 
     /// Establishes a crypto stream for the given stream

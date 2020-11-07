@@ -8,7 +8,7 @@ pub type VentedResult<T> = Result<T, VentedError>;
 pub enum VentedError {
     NameDecodingError,
     NotReady,
-    NotAServer(String),
+    UnreachableNode(String),
     IOError(io::Error),
     SerializeError(rmp_serde::encode::Error),
     DeserializeError(rmp_serde::decode::Error),
@@ -31,7 +31,6 @@ impl fmt::Display for VentedError {
             Self::UnexpectedEvent(e) => write!(f, "Received unexpected event: {}", e),
             Self::UnknownNode(n) => write!(f, "Received connection from unknown node: {}", n),
             Self::NotReady => write!(f, "The connection is still being established."),
-            Self::NotAServer(n) => write!(f, "The given node {} is not a server", n),
             Self::Rejected => write!(f, "The connection was rejected"),
             Self::AuthFailed => write!(f, "Failed to authenticate the other party"),
             Self::VersionMismatch(version) => write!(
@@ -39,6 +38,7 @@ impl fmt::Display for VentedError {
                 "Version mismatch: Expected {} got {}",
                 CRATE_VERSION, version
             ),
+            Self::UnreachableNode(node) => write!(f, "Node {} can't be reached", node),
         }
     }
 }

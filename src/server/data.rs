@@ -7,6 +7,8 @@ use scheduled_thread_pool::ScheduledThreadPool;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 use x25519_dalek::PublicKey;
 
 #[derive(Clone, Debug)]
@@ -51,10 +53,24 @@ impl<T> Future<T> {
 
     /// Returns the value of the future after it has been set.
     /// This call blocks
+    #[allow(dead_code)]
     pub fn get_value(&mut self) -> T {
         if let Some(wg) = mem::take(&mut self.wg) {
             wg.wait();
         }
         self.value.lock().take().unwrap()
+    }
+
+    /// Returns the value of the future only blocking for the given timeout
+    pub fn get_value_with_timeout(&mut self, millis: u128) -> Option<T> {
+        let start = Instant::now();
+
+        while self.value.lock().is_none() {
+            thread::sleep(Duration::from_millis(1));
+            if start.elapsed().as_millis() > millis {
+                break;
+            }
+        }
+        self.value.lock().take()
     }
 }
