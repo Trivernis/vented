@@ -108,7 +108,7 @@ where
     T: Aead,
 {
     inner: T,
-    counter: usize,
+    counter: u128,
 }
 
 impl<T> EncryptionBox<T>
@@ -161,8 +161,10 @@ impl EncryptionBox<ChaChaBox> {
 }
 
 /// Generates a nonce by hashing the input number which is the message counter
-fn generate_nonce(number: usize) -> GenericArray<u8, U24> {
-    let result = sha2::Sha256::digest(&number.to_be_bytes()).to_vec();
+fn generate_nonce(number: u128) -> GenericArray<u8, U24> {
+    let mut number_raw = [0u8; 16];
+    BigEndian::write_u128(&mut number_raw, number);
+    let result = sha2::Sha256::digest(&number_raw).to_vec();
     let mut nonce = [0u8; 24];
     nonce.copy_from_slice(&result[0..24]);
 
