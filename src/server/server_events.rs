@@ -6,8 +6,7 @@ pub(crate) const CHALLENGE_EVENT: &str = "conn:challenge";
 pub(crate) const ACCEPT_EVENT: &str = "conn:accept";
 pub(crate) const REJECT_EVENT: &str = "conn:reject";
 pub(crate) const MISMATCH_EVENT: &str = "conn:reject_version_mismatch";
-
-pub const READY_EVENT: &str = "connection:ready";
+pub const READY_EVENT: &str = "server:ready";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct NodeInformationPayload {
