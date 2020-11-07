@@ -1,3 +1,4 @@
+use crate::server::CRATE_VERSION;
 use std::error::Error;
 use std::{fmt, io};
 
@@ -16,6 +17,7 @@ pub enum VentedError {
     UnknownNode(String),
     Rejected,
     AuthFailed,
+    VersionMismatch(String),
 }
 
 impl fmt::Display for VentedError {
@@ -32,6 +34,11 @@ impl fmt::Display for VentedError {
             Self::NotAServer(n) => write!(f, "The given node {} is not a server", n),
             Self::Rejected => write!(f, "The connection was rejected"),
             Self::AuthFailed => write!(f, "Failed to authenticate the other party"),
+            Self::VersionMismatch(version) => write!(
+                f,
+                "Version mismatch: Expected {} got {}",
+                CRATE_VERSION, version
+            ),
         }
     }
 }

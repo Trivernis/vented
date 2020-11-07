@@ -11,8 +11,8 @@ use crate::result::VentedError::UnknownNode;
 use crate::result::{VentedError, VentedResult};
 use crate::server::data::{Node, ServerConnectionContext};
 use crate::server::server_events::{
-    AuthPayload, ChallengePayload, NodeInformationPayload, ACCEPT_EVENT, AUTH_EVENT,
-    CHALLENGE_EVENT, CONNECT_EVENT, READY_EVENT, REJECT_EVENT,
+    AuthPayload, ChallengePayload, NodeInformationPayload, VersionMismatchPayload, ACCEPT_EVENT,
+    AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT, REJECT_EVENT,
 };
 use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
@@ -23,6 +23,8 @@ use x25519_dalek::StaticSecret;
 
 pub mod data;
 pub mod server_events;
+
+pub(crate) const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The vented server that provides parallel handling of connections
 /// Usage:
@@ -296,6 +298,7 @@ impl VentedServer {
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
                     node_id: own_node_id,
+                    vented_version: CRATE_VERSION.to_string(),
                 },
             )
             .as_bytes(),
@@ -308,7 +311,20 @@ impl VentedServer {
         let NodeInformationPayload {
             public_key,
             node_id,
+            vented_version,
         } = event.get_payload::<NodeInformationPayload>().unwrap();
+
+        if !Self::compare_version(&vented_version, CRATE_VERSION) {
+            stream.write(
+                &Event::with_payload(
+                    MISMATCH_EVENT,
+                    &VersionMismatchPayload::new(CRATE_VERSION, &vented_version),
+                )
+                .as_bytes(),
+            )?;
+            stream.flush()?;
+            return Err(VentedError::VersionMismatch(vented_version));
+        }
 
         let public_key = PublicKey::from(public_key);
         let secret_box = ChaChaBox::new(&public_key, &secret_key);
@@ -348,9 +364,22 @@ impl VentedServer {
         let NodeInformationPayload {
             public_key,
             node_id,
+            vented_version,
         } = event.get_payload::<NodeInformationPayload>().unwrap();
-        let public_key = PublicKey::from(public_key);
 
+        if !Self::compare_version(&vented_version, CRATE_VERSION) {
+            stream.write(
+                &Event::with_payload(
+                    MISMATCH_EVENT,
+                    &VersionMismatchPayload::new(CRATE_VERSION, &vented_version),
+                )
+                .as_bytes(),
+            )?;
+            stream.flush()?;
+            return Err(VentedError::VersionMismatch(vented_version));
+        }
+
+        let public_key = PublicKey::from(public_key);
         let node_data = if let Some(data) = known_nodes.lock().iter().find(|n| n.id == node_id) {
             data.clone()
         } else {
@@ -365,6 +394,7 @@ impl VentedServer {
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
                     node_id: own_node_id,
+                    vented_version: CRATE_VERSION.to_string(),
                 },
             )
             .as_bytes(),
@@ -442,5 +472,13 @@ impl VentedServer {
             stream.send(Event::new(ACCEPT_EVENT))?;
             Ok(())
         }
+    }
+
+    /// Compares two version for their major and minor value
+    fn compare_version(a: &str, b: &str) -> bool {
+        let parts_a = a.split('.').collect::<Vec<&str>>();
+        let parts_b = b.split('.').collect::<Vec<&str>>();
+
+        parts_a.get(0) == parts_b.get(0) && parts_a.get(1) == parts_b.get(1)
     }
 }
