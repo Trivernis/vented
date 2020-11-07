@@ -305,7 +305,13 @@ impl VentedServer {
             self.redirect_handles
                 .lock()
                 .insert(payload.id, Future::clone(&future));
-            self.emit(node.id, Event::with_payload(REDIRECT_EVENT, &payload))?;
+
+            if let Ok(stream) = self.get_connection(&node.id) {
+                if let Err(e) = stream.send(Event::with_payload(REDIRECT_EVENT, &payload)) {
+                    log::error!("Failed to send event: {}", e);
+                    self.connections.lock().remove(stream.receiver_node());
+                }
+            }
 
             if let Some(value) = future.get_value_with_timeout(1000) {
                 if value {
