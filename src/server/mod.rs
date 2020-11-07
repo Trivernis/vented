@@ -95,6 +95,16 @@ impl VentedServer {
         }
     }
 
+    /// Returns the nodeId of the server
+    pub fn node_id(&self) -> String {
+        self.node_id.clone()
+    }
+
+    /// Returns the nodes known to the server
+    pub fn nodes(&self) -> Vec<Node> {
+        self.known_nodes.lock().clone()
+    }
+
     /// Emits an event to the specified Node
     /// The actual writing is done in a separate thread from the thread pool.
     /// With the returned waitgroup one can wait for the event to be written.
