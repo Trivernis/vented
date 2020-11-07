@@ -81,8 +81,14 @@ impl VentedServer {
         Self {
             node_id,
             event_handler: Arc::new(Mutex::new(EventHandler::new())),
-            listener_pool: Arc::new(Mutex::new(ScheduledThreadPool::new(num_threads))),
-            sender_pool: Arc::new(Mutex::new(ScheduledThreadPool::new(num_threads))),
+            listener_pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
+                "vented_listeners",
+                num_threads,
+            ))),
+            sender_pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
+                "vented_senders",
+                num_threads,
+            ))),
             connections: Arc::new(Mutex::new(HashMap::new())),
             global_secret_key: secret_key,
             known_nodes: Arc::new(Mutex::new(nodes)),
