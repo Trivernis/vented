@@ -153,7 +153,7 @@ impl VentedServer {
                     let event_handler = Arc::clone(&event_handler);
                     move || {
                         let response = event_handler.lock().handle_event(event);
-                        let event = response.map(|mut value| {
+                        let event = response.first().cloned().map(|mut value| {
                             Event::with_payload(
                                 REDIRECT_EVENT,
                                 &RedirectPayload::new(

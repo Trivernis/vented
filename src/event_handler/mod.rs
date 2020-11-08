@@ -33,21 +33,17 @@ impl EventHandler {
     }
 
     /// Handles a single event
-    pub fn handle_event(&mut self, event: Event) -> Option<Event> {
+    pub fn handle_event(&mut self, event: Event) -> Vec<Event> {
+        let mut response_events = Vec::new();
+
         if let Some(handlers) = self.event_handlers.get(&event.name) {
-            let mut event = Some(event);
             for handler in handlers {
-                if let Some(e) = handler(event.unwrap()) {
-                    event = Some(e);
-                } else {
-                    event = None;
-                    break;
+                if let Some(e) = handler(event.clone()) {
+                    response_events.push(e);
                 }
             }
-
-            event
-        } else {
-            None
         }
+
+        response_events
     }
 }

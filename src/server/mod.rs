@@ -148,9 +148,8 @@ impl VentedServer {
     }
 
     /// Adds a handler for the given event.
-    /// The event returned by the handler is returned to the server.
-    /// If there is more than one handler, the response will be piped to the next handler.
-    /// The oder is by order of insertion. The first registered handler will be executed first.
+    /// The event returned by the handler is returned to the sender.
+    /// Multiple handlers can be registered for an event.
     pub fn on<F: 'static>(&mut self, event_name: &str, handler: F)
     where
         F: Fn(Event) -> Option<Event> + Send + Sync,
@@ -299,7 +298,7 @@ impl VentedServer {
     ) -> VentedResult<()> {
         while let Ok(mut event) = stream.read() {
             event.origin = Some(stream.receiver_node().clone());
-            if let Some(response) = event_handler.lock().handle_event(event) {
+            for response in event_handler.lock().handle_event(event) {
                 stream.send(response)?
             }
         }
