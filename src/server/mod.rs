@@ -333,7 +333,7 @@ impl VentedServer {
             }
         }
 
-        log::debug!("All connection attempts to {} failed!", target);
+        log::trace!("All direct connection attempts to {} failed", target);
 
         Err(VentedError::UnreachableNode(target.clone()))
     }

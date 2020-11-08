@@ -143,34 +143,37 @@ impl VentedServer {
             let event_handler = Arc::clone(&self.event_handler);
             let connections = Arc::clone(&self.connections);
             let pool = Arc::clone(&self.sender_pool);
+            let known_nodes = Arc::clone(&self.known_nodes);
 
             move |event| {
                 let payload = event.get_payload::<RedirectPayload>().ok()?;
                 let event = Event::from_bytes(&mut &payload.content[..]).ok()?;
                 let proxy_stream = connections.lock().get(&payload.proxy)?.clone();
 
-                pool.lock().execute({
-                    let event_handler = Arc::clone(&event_handler);
-                    move || {
-                        let response = event_handler.lock().handle_event(event);
-                        let event = response.first().cloned().map(|mut value| {
-                            Event::with_payload(
-                                REDIRECT_EVENT,
-                                &RedirectPayload::new(
-                                    payload.target,
-                                    payload.proxy,
-                                    payload.source,
-                                    value.as_bytes(),
-                                ),
-                            )
-                        });
-                        if let Some(event) = event {
-                            proxy_stream
-                                .send(event)
-                                .expect("Failed to respond to redirected event.");
+                if known_nodes.lock().contains_key(&payload.source) {
+                    pool.lock().execute({
+                        let event_handler = Arc::clone(&event_handler);
+                        move || {
+                            let response = event_handler.lock().handle_event(event);
+                            let event = response.first().cloned().map(|mut value| {
+                                Event::with_payload(
+                                    REDIRECT_EVENT,
+                                    &RedirectPayload::new(
+                                        payload.target,
+                                        payload.proxy,
+                                        payload.source,
+                                        value.as_bytes(),
+                                    ),
+                                )
+                            });
+                            if let Some(event) = event {
+                                proxy_stream
+                                    .send(event)
+                                    .expect("Failed to respond to redirected event.");
+                            }
                         }
-                    }
-                });
+                    });
+                }
 
                 None
             }
