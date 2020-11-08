@@ -12,8 +12,8 @@ use crate::result::{VentedError, VentedResult};
 use crate::server::data::{AsyncValue, Node, ServerConnectionContext};
 use crate::server::server_events::{
     AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload, VersionMismatchPayload,
-    ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT,
-    NODE_LIST_REQUEST_EVENT, READY_EVENT, REDIRECT_EVENT, REJECT_EVENT,
+    ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT,
+    REDIRECT_EVENT, REJECT_EVENT,
 };
 use crossbeam_utils::sync::WaitGroup;
 use parking_lot::Mutex;
@@ -179,22 +179,6 @@ impl VentedServer {
         });
 
         wg2
-    }
-
-    /// Request a list of network nodes from a trusted node
-    pub fn request_node_list(&self) -> VentedResult<()> {
-        let trusted_nodes = self
-            .known_nodes
-            .lock()
-            .values()
-            .filter(|node| node.trusted)
-            .cloned()
-            .collect::<Vec<Node>>();
-        for node in trusted_nodes {
-            self.emit(node.id, Event::new(NODE_LIST_REQUEST_EVENT))?;
-        }
-
-        Ok(())
     }
 
     /// Returns a copy of the servers metadata

@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 use vented::event::Event;
 use vented::server::data::Node;
-use vented::server::server_events::READY_EVENT;
+use vented::server::server_events::{NODE_LIST_REQUEST_EVENT, READY_EVENT};
 use vented::server::VentedServer;
 
 fn setup() {
@@ -97,7 +97,9 @@ fn test_server_communication() {
             None
         }
     });
-    server_b.request_node_list().unwrap();
+    server_b
+        .emit("A".to_string(), Event::new(NODE_LIST_REQUEST_EVENT))
+        .unwrap();
     server_c
         .emit("A".to_string(), Event::new("ping".to_string()))
         .unwrap();
