@@ -41,6 +41,7 @@ type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 /// use rand::thread_rng;
 /// use vented::event::Event;
 ///
+/// let global_secret_b = SecretKey::generate(&mut thread_rng());
 /// let nodes = vec![
 /// Node {
 ///        id: "B".to_string(),
@@ -51,7 +52,7 @@ type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 ///];
 /// // in a real world example the secret key needs to be loaded from somewhere because connections
 /// // with unknown keys are not accepted.
-/// let global_secret = SecretKey::new(&mut thread_rng());
+/// let global_secret = SecretKey::generate(&mut thread_rng());
 /// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4);
 ///
 ///
@@ -61,14 +62,13 @@ type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 ///    
 ///    None    // the return value is the response event Option<Event>
 /// });
-/// server.emit("B".to_string(), Event::new("ping".to_string())).unwrap();
+/// assert!(server.emit("B".to_string(), Event::new("ping".to_string())).is_err()) // this won't work without a known node B
 /// ```
 pub struct VentedServer {
     connections: CryptoStreamMap,
     forwarded_connections: ForwardFutureVector,
     known_nodes: Arc<Mutex<HashMap<String, Node>>>,
-    listener_pool: Arc<Mutex<ScheduledThreadPool>>,
-    sender_pool: Arc<Mutex<ScheduledThreadPool>>,
+    pool: Arc<Mutex<ScheduledThreadPool>>,
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
@@ -79,7 +79,6 @@ impl VentedServer {
     /// Creates a new vented server with a given node_id and secret key that are
     /// used to authenticate against other servers.
     /// The given nodes are used for authentication.
-    /// The server runs with 2x the given amount of threads.
     pub fn new(
         node_id: String,
         secret_key: SecretKey,
@@ -89,12 +88,8 @@ impl VentedServer {
         let mut server = Self {
             node_id,
             event_handler: Arc::new(Mutex::new(EventHandler::new())),
-            listener_pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
-                "vented_listeners",
-                num_threads,
-            ))),
-            sender_pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
-                "vented_senders",
+            pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
+                "vented",
                 num_threads,
             ))),
             connections: Arc::new(Mutex::new(HashMap::new())),
@@ -123,20 +118,14 @@ impl VentedServer {
     /// Emits an event to the specified Node
     /// The actual writing is done in a separate thread from the thread pool.
     /// With the returned wait group one can wait for the event to be written.
-    pub fn emit(&self, node_id: String, event: Event) -> VentedResult<WaitGroup> {
-        let wg = WaitGroup::new();
+    pub fn emit(&self, node_id: String, event: Event) -> VentedResult<()> {
         if let Ok(stream) = self.get_connection(&node_id) {
-            self.sender_pool.lock().execute({
-                let wg = WaitGroup::clone(&wg);
-                let connections = Arc::clone(&self.connections);
-                move || {
-                    if let Err(e) = stream.send(event) {
-                        log::error!("Failed to send event: {}", e);
-                        connections.lock().remove(stream.receiver_node());
-                    }
-                    std::mem::drop(wg);
-                }
-            });
+            if let Err(e) = stream.send(event) {
+                log::error!("Failed to send event: {}", e);
+                self.connections.lock().remove(stream.receiver_node());
+
+                return Err(e);
+            }
         } else {
             log::trace!(
                 "Trying to redirect the event to a different node to be sent to target node..."
@@ -144,7 +133,7 @@ impl VentedServer {
             self.send_event_redirected(node_id, event)?;
         }
 
-        Ok(wg)
+        Ok(())
     }
 
     /// Adds a handler for the given event.
@@ -216,7 +205,7 @@ impl VentedServer {
             known_nodes: Arc::clone(&self.known_nodes),
             connections: Arc::clone(&self.connections),
             event_handler: Arc::clone(&self.event_handler),
-            listener_pool: Arc::clone(&self.listener_pool),
+            listener_pool: Arc::clone(&self.pool),
             forwarded_connections: Arc::clone(&self.forwarded_connections),
         }
     }
@@ -368,7 +357,7 @@ impl VentedServer {
         let connections = Arc::clone(&context.connections);
         let stream = Self::get_crypto_stream(context.clone(), stream)?;
 
-        self.listener_pool.lock().execute({
+        self.pool.lock().execute({
             let stream = CryptoStream::clone(&stream);
             let event_handler = Arc::clone(&self.event_handler);
 

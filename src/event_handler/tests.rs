@@ -45,5 +45,5 @@ fn it_handles_events() {
     handler.handle_event(Event::new("test".to_string()));
     handler.handle_event(Event::new("test2".to_string()));
 
-    assert_eq!(call_count.load(Ordering::Relaxed), 5)
+    assert_eq!(call_count.load(Ordering::Relaxed), 6)
 }

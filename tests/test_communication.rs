@@ -98,24 +98,20 @@ fn test_server_communication() {
         }
     });
     server_b.request_node_list().unwrap();
-    let wg = server_c
+    server_c
         .emit("A".to_string(), Event::new("ping".to_string()))
         .unwrap();
-    wg.wait();
     for _ in 0..9 {
-        let wg = server_b
+        server_b
             .emit("A".to_string(), Event::new("ping".to_string()))
             .unwrap();
-        wg.wait();
     }
-    let wg = server_a
+    server_a
         .emit("B".to_string(), Event::new("pong".to_string()))
         .unwrap();
-    wg.wait();
-    let wg = server_b
+    server_b
         .emit("C".to_string(), Event::new("ping".to_string()))
         .unwrap();
-    wg.wait();
 
     // wait one second to make sure the servers were able to process the events
     for _ in 0..100 {

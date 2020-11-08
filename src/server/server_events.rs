@@ -142,7 +142,7 @@ impl VentedServer {
         self.on(REDIRECT_REDIRECTED_EVENT, {
             let event_handler = Arc::clone(&self.event_handler);
             let connections = Arc::clone(&self.connections);
-            let pool = Arc::clone(&self.sender_pool);
+            let pool = Arc::clone(&self.pool);
             let known_nodes = Arc::clone(&self.known_nodes);
 
             move |event| {
