@@ -9,7 +9,7 @@ use crate::event::Event;
 use crate::event_handler::EventHandler;
 use crate::result::VentedError::UnknownNode;
 use crate::result::{VentedError, VentedResult};
-use crate::server::data::{Future, Node, ServerConnectionContext};
+use crate::server::data::{AsyncValue, Node, ServerConnectionContext};
 use crate::server::server_events::{
     AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload, VersionMismatchPayload,
     ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT,
@@ -22,6 +22,7 @@ use std::io::Write;
 use std::iter::FromIterator;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use x25519_dalek::StaticSecret;
 
 pub mod data;
@@ -29,7 +30,7 @@ pub mod server_events;
 
 pub(crate) const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), Future<CryptoStream>>>>;
+type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream>>>>;
 type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 
 /// The vented server that provides parallel handling of connections
@@ -72,7 +73,7 @@ pub struct VentedServer {
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
-    redirect_handles: Arc<Mutex<HashMap<[u8; 16], Future<bool>>>>,
+    redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<bool>>>>,
 }
 
 impl VentedServer {
@@ -226,10 +227,10 @@ impl VentedServer {
                 target.clone(),
                 event.clone().as_bytes(),
             );
-            let mut future = Future::new();
+            let mut future = AsyncValue::new();
             self.redirect_handles
                 .lock()
-                .insert(payload.id, Future::clone(&future));
+                .insert(payload.id, AsyncValue::clone(&future));
 
             if let Ok(stream) = self.get_connection(&node.id) {
                 if let Err(e) = stream.send(Event::with_payload(REDIRECT_EVENT, &payload)) {
@@ -238,7 +239,7 @@ impl VentedServer {
                 }
             }
 
-            if let Some(value) = future.get_value_with_timeout(1000) {
+            if let Some(value) = future.get_value_with_timeout(Duration::from_secs(1)) {
                 if value {
                     return Ok(());
                 }

@@ -27,17 +27,17 @@ pub(crate) struct ServerConnectionContext {
     pub known_nodes: Arc<Mutex<HashMap<String, Node>>>,
     pub event_handler: Arc<Mutex<EventHandler>>,
     pub connections: Arc<Mutex<HashMap<String, CryptoStream>>>,
-    pub forwarded_connections: Arc<Mutex<HashMap<(String, String), Future<CryptoStream>>>>,
+    pub forwarded_connections: Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream>>>>,
     pub listener_pool: Arc<Mutex<ScheduledThreadPool>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct Future<T> {
+pub struct AsyncValue<T> {
     value: Arc<Mutex<Option<T>>>,
     wg: Option<WaitGroup>,
 }
 
-impl<T> Future<T> {
+impl<T> AsyncValue<T> {
     /// Creates the future with no value
     pub fn new() -> Self {
         Self {
@@ -63,12 +63,12 @@ impl<T> Future<T> {
     }
 
     /// Returns the value of the future only blocking for the given timeout
-    pub fn get_value_with_timeout(&mut self, millis: u128) -> Option<T> {
+    pub fn get_value_with_timeout(&mut self, timeout: Duration) -> Option<T> {
         let start = Instant::now();
 
         while self.value.lock().is_none() {
             thread::sleep(Duration::from_millis(1));
-            if start.elapsed().as_millis() > millis {
+            if start.elapsed() > timeout {
                 break;
             }
         }
