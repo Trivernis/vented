@@ -89,9 +89,9 @@ pub struct NodeListPayload {
 
 #[derive(Serialize, Deserialize)]
 pub struct NodeListElement {
-    id: String,
-    public_key: [u8; 32],
-    address: Option<String>,
+    pub id: String,
+    pub public_key: [u8; 32],
+    pub address: Option<String>,
 }
 
 impl VentedServer {
