@@ -17,7 +17,7 @@ pub(crate) const REDIRECT_CONFIRM_EVENT: &str = "conn:redirect_confirm";
 pub(crate) const REDIRECT_FAIL_EVENT: &str = "conn:redirect_failed";
 pub(crate) const REDIRECT_REDIRECTED_EVENT: &str = "conn:redirect_redirected";
 pub(crate) const NODE_LIST_REQUEST_EVENT: &str = "conn:node_list_request";
-const NODE_LIST_EVENT: &str = "conn:node_list";
+pub const NODE_LIST_EVENT: &str = "conn:node_list";
 
 pub const READY_EVENT: &str = "server:ready";
 
@@ -177,6 +177,7 @@ impl VentedServer {
         });
         self.on(NODE_LIST_EVENT, {
             let node_list = Arc::clone(&self.known_nodes);
+            let own_id = self.node_id.clone();
 
             move |event| {
                 let list = event.get_payload::<NodeListPayload>().ok()?;
@@ -190,7 +191,7 @@ impl VentedServer {
 
                 let mut new_nodes = 0;
                 for node in list.nodes {
-                    if !own_nodes.contains_key(&node.id) {
+                    if !own_nodes.contains_key(&node.id) && node.id != own_id {
                         own_nodes.insert(
                             node.id.clone(),
                             Node {
@@ -211,10 +212,12 @@ impl VentedServer {
         self.on(NODE_LIST_REQUEST_EVENT, {
             let node_list = Arc::clone(&self.known_nodes);
 
-            move |_| {
+            move |event| {
+                let sender_id = event.origin?;
                 let nodes = node_list
                     .lock()
                     .values()
+                    .filter(|node| node.id != sender_id)
                     .map(|node| NodeListElement {
                         id: node.id.clone(),
                         address: node.address.clone(),

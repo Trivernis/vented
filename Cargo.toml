@@ -1,7 +1,7 @@
 [package]
 name = "vented"
 description = "Event driven encrypted tcp communicaton"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["trivernis <trivernis@protonmail.com>"]
 edition = "2018"
 readme = "README.md"
