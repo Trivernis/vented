@@ -20,6 +20,7 @@ pub struct EmptyPayload {}
 pub struct Event {
     pub name: String,
     pub payload: Vec<u8>,
+    pub origin: Option<String>,
 }
 
 impl Event {
@@ -28,6 +29,7 @@ impl Event {
         Self {
             name: name.to_string(),
             payload: Vec::with_capacity(0),
+            origin: None,
         }
     }
 }
@@ -39,6 +41,7 @@ impl Event {
         Self {
             name: name.to_string(),
             payload,
+            origin: None,
         }
     }
 
@@ -84,6 +87,7 @@ impl Event {
         Ok(Self {
             name: event_name,
             payload,
+            origin: None,
         })
     }
 

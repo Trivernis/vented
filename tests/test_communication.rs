@@ -29,16 +29,19 @@ fn test_server_communication() {
             id: "A".to_string(),
             address: Some("localhost:22222".to_string()),
             public_key: global_secret_a.public_key(),
+            trusted: true,
         },
         Node {
             id: "B".to_string(),
             address: None,
             public_key: global_secret_b.public_key(),
+            trusted: false,
         },
         Node {
             id: "C".to_string(),
             address: None,
             public_key: global_secret_c.public_key(),
+            trusted: false,
         },
     ];
     let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes.clone(), 6);
@@ -64,7 +67,9 @@ fn test_server_communication() {
     });
     server_a.on(READY_EVENT, {
         let ready_count = Arc::clone(&ready_count);
+
         move |_| {
+            println!("Server A ready");
             ready_count.fetch_add(1, Ordering::Relaxed);
             None
         }
@@ -72,6 +77,15 @@ fn test_server_communication() {
     server_b.on(READY_EVENT, {
         let ready_count = Arc::clone(&ready_count);
         move |_| {
+            println!("Server B ready");
+            ready_count.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    });
+    server_c.on(READY_EVENT, {
+        let ready_count = Arc::clone(&ready_count);
+        move |_| {
+            println!("Server C ready");
             ready_count.fetch_add(1, Ordering::Relaxed);
             None
         }
@@ -80,10 +94,10 @@ fn test_server_communication() {
         let ping_c_count = Arc::clone(&ping_c_count);
         move |_| {
             ping_c_count.fetch_add(1, Ordering::Relaxed);
-            println!("C RECEIVED A PING!");
             None
         }
     });
+    server_b.request_node_list().unwrap();
     let wg = server_c
         .emit("A".to_string(), Event::new("ping".to_string()))
         .unwrap();
@@ -109,7 +123,7 @@ fn test_server_communication() {
     }
 
     assert_eq!(ping_c_count.load(Ordering::SeqCst), 1);
-    assert_eq!(ready_count.load(Ordering::SeqCst), 3);
+    assert_eq!(ready_count.load(Ordering::SeqCst), 4);
     assert_eq!(ping_count.load(Ordering::SeqCst), 10);
     assert_eq!(pong_count.load(Ordering::SeqCst), 10);
 }

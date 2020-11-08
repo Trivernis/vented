@@ -16,6 +16,7 @@ pub struct Node {
     pub id: String,
     pub public_key: PublicKey,
     pub address: Option<String>,
+    pub trusted: bool,
 }
 
 #[derive(Clone)]
@@ -23,7 +24,7 @@ pub(crate) struct ServerConnectionContext {
     pub is_server: bool,
     pub node_id: String,
     pub global_secret: SecretKey,
-    pub known_nodes: Arc<Mutex<Vec<Node>>>,
+    pub known_nodes: Arc<Mutex<HashMap<String, Node>>>,
     pub event_handler: Arc<Mutex<EventHandler>>,
     pub connections: Arc<Mutex<HashMap<String, CryptoStream>>>,
     pub forwarded_connections: Arc<Mutex<HashMap<(String, String), Future<CryptoStream>>>>,
