@@ -116,6 +116,11 @@ impl VentedServer {
         self.known_nodes.lock().values().cloned().collect()
     }
 
+    /// Returns the actual reference to the inner node list
+    pub fn nodes_ref(&self) -> Arc<Mutex<HashMap<String, Node>>> {
+        Arc::clone(&self.known_nodes)
+    }
+
     /// Emits an event to the specified Node
     /// The actual writing is done in a separate thread from the thread pool.
     /// With the returned wait group one can wait for the event to be written.
