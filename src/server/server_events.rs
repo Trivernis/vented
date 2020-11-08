@@ -17,7 +17,7 @@ pub(crate) const REDIRECT_CONFIRM_EVENT: &str = "conn:redirect_confirm";
 pub(crate) const REDIRECT_FAIL_EVENT: &str = "conn:redirect_failed";
 pub(crate) const REDIRECT_REDIRECTED_EVENT: &str = "conn:redirect_redirected";
 pub(crate) const NODE_LIST_REQUEST_EVENT: &str = "conn:node_list_request";
-pub(crate) const NODE_LIST_EVENT: &str = "conn:node_list";
+const NODE_LIST_EVENT: &str = "conn:node_list";
 
 pub const READY_EVENT: &str = "server:ready";
 
@@ -83,12 +83,12 @@ pub(crate) struct RedirectResponsePayload {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct NodeListPayload {
+pub struct NodeListPayload {
     pub nodes: Vec<NodeListElement>,
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct NodeListElement {
+pub struct NodeListElement {
     id: String,
     public_key: [u8; 32],
     address: Option<String>,
