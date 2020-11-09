@@ -362,7 +362,6 @@ impl VentedServer {
     /// then establishing an encrypted connection
     fn handle_connection(context: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
         let event_handler = Arc::clone(&context.event_handler);
-        stream.set_read_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         log::trace!(
             "Received connection from {}",
@@ -452,7 +451,6 @@ impl VentedServer {
         address: String,
     ) -> VentedResult<CryptoStream> {
         let stream = TcpStream::connect(address)?;
-        stream.set_read_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         context.is_server = false;
         let stream = Self::get_crypto_stream(context, stream)?;
