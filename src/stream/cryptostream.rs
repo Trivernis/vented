@@ -32,7 +32,6 @@ impl CryptoStream {
         public_key: &PublicKey,
         secret_key: &SecretKey,
     ) -> VentedResult<Self> {
-        inner.set_nonblocking(false)?;
         let send_stream = Arc::new(Mutex::new(inner.try_clone()?));
         let recv_stream = Arc::new(Mutex::new(inner));
         let send_box = EncryptionBox::new(ChaChaBox::new(public_key, secret_key));
@@ -103,7 +102,6 @@ impl CryptoStream {
     /// Closes both streams
     pub fn shutdown(&self) -> VentedResult<()> {
         self.send_stream.lock().shutdown(Shutdown::Both)?;
-        self.recv_stream.lock().shutdown(Shutdown::Both)?;
 
         Ok(())
     }
