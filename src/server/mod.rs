@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 
 use crypto_box::{PublicKey, SecretKey};
-use scheduled_thread_pool::ScheduledThreadPool;
+use executors::{crossbeam_workstealing_pool, Executor};
 
 use crate::crypto::CryptoStream;
 use crate::event::Event;
@@ -16,6 +16,7 @@ use crate::server::server_events::{
     REDIRECT_EVENT, REJECT_EVENT,
 };
 use crossbeam_utils::sync::WaitGroup;
+use executors::parker::DynParker;
 use parking_lot::Mutex;
 use sha2::Digest;
 use std::io::Write;
@@ -69,7 +70,7 @@ pub struct VentedServer {
     connections: CryptoStreamMap,
     forwarded_connections: ForwardFutureVector,
     known_nodes: Arc<Mutex<HashMap<String, Node>>>,
-    pool: Arc<Mutex<ScheduledThreadPool>>,
+    pool: crossbeam_workstealing_pool::ThreadPool<DynParker>,
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
@@ -89,10 +90,7 @@ impl VentedServer {
         let mut server = Self {
             node_id,
             event_handler: Arc::new(Mutex::new(EventHandler::new())),
-            pool: Arc::new(Mutex::new(ScheduledThreadPool::with_name(
-                "vented",
-                num_threads,
-            ))),
+            pool: executors::crossbeam_workstealing_pool::pool_with_auto_parker(num_threads),
             connections: Arc::new(Mutex::new(HashMap::new())),
             forwarded_connections: Arc::new(Mutex::new(HashMap::new())),
             global_secret_key: secret_key,
@@ -195,7 +193,7 @@ impl VentedServer {
             known_nodes: Arc::clone(&self.known_nodes),
             connections: Arc::clone(&self.connections),
             event_handler: Arc::clone(&self.event_handler),
-            listener_pool: Arc::clone(&self.pool),
+            pool: self.pool.clone(),
             forwarded_connections: Arc::clone(&self.forwarded_connections),
         }
     }
@@ -241,14 +239,14 @@ impl VentedServer {
     /// Handles a single connection by first performing a key exchange and
     /// then establishing an encrypted connection
     fn handle_connection(params: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
-        let pool = Arc::clone(&params.listener_pool);
+        let pool = params.pool.clone();
         let event_handler = Arc::clone(&params.event_handler);
         log::trace!(
             "Received connection from {}",
             stream.peer_addr().expect("Failed to get peer address")
         );
 
-        pool.lock().execute(move || {
+        pool.execute(move || {
             let connections = Arc::clone(&params.connections);
 
             let stream = match VentedServer::get_crypto_stream(params, stream) {
@@ -347,7 +345,7 @@ impl VentedServer {
         let connections = Arc::clone(&context.connections);
         let stream = Self::get_crypto_stream(context.clone(), stream)?;
 
-        self.pool.lock().execute({
+        self.pool.execute({
             let stream = CryptoStream::clone(&stream);
             let event_handler = Arc::clone(&self.event_handler);
 

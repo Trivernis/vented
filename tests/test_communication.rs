@@ -16,7 +16,6 @@ fn setup() {
 fn test_server_communication() {
     setup();
     let ping_count = Arc::new(AtomicUsize::new(0));
-    let ping_c_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
     let ready_count = Arc::new(AtomicUsize::new(0));
     let mut rng = rand::thread_rng();
@@ -90,13 +89,6 @@ fn test_server_communication() {
             None
         }
     });
-    server_c.on("ping", {
-        let ping_c_count = Arc::clone(&ping_c_count);
-        move |_| {
-            ping_c_count.fetch_add(1, Ordering::Relaxed);
-            None
-        }
-    });
     server_b
         .emit("A".to_string(), Event::new(NODE_LIST_REQUEST_EVENT))
         .unwrap();
@@ -120,7 +112,6 @@ fn test_server_communication() {
         thread::sleep(Duration::from_millis(10));
     }
 
-    assert_eq!(ping_c_count.load(Ordering::SeqCst), 1);
     assert_eq!(ready_count.load(Ordering::SeqCst), 4);
     assert_eq!(ping_count.load(Ordering::SeqCst), 10);
     assert_eq!(pong_count.load(Ordering::SeqCst), 10);

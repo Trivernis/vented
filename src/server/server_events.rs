@@ -1,6 +1,7 @@
 use crate::event::Event;
 use crate::server::data::Node;
 use crate::server::VentedServer;
+use executors::Executor;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -142,7 +143,7 @@ impl VentedServer {
         self.on(REDIRECT_REDIRECTED_EVENT, {
             let event_handler = Arc::clone(&self.event_handler);
             let connections = Arc::clone(&self.connections);
-            let pool = Arc::clone(&self.pool);
+            let pool = self.pool.clone();
             let known_nodes = Arc::clone(&self.known_nodes);
 
             move |event| {
@@ -151,7 +152,7 @@ impl VentedServer {
                 let proxy_stream = connections.lock().get(&payload.proxy)?.clone();
 
                 if known_nodes.lock().contains_key(&payload.source) {
-                    pool.lock().execute({
+                    pool.execute({
                         let event_handler = Arc::clone(&event_handler);
                         move || {
                             let response = event_handler.lock().handle_event(event);

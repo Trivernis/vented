@@ -2,8 +2,9 @@ use crate::crypto::CryptoStream;
 use crate::event_handler::EventHandler;
 use crate::WaitGroup;
 use crypto_box::SecretKey;
+use executors::crossbeam_workstealing_pool;
+use executors::parker::DynParker;
 use parking_lot::Mutex;
-use scheduled_thread_pool::ScheduledThreadPool;
 use std::collections::HashMap;
 use std::mem;
 use std::sync::Arc;
@@ -28,7 +29,7 @@ pub(crate) struct ServerConnectionContext {
     pub event_handler: Arc<Mutex<EventHandler>>,
     pub connections: Arc<Mutex<HashMap<String, CryptoStream>>>,
     pub forwarded_connections: Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream>>>>,
-    pub listener_pool: Arc<Mutex<ScheduledThreadPool>>,
+    pub pool: crossbeam_workstealing_pool::ThreadPool<DynParker>,
 }
 
 #[derive(Clone)]
