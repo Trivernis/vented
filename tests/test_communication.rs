@@ -91,21 +91,21 @@ fn test_server_communication() {
     });
     server_b
         .emit("A".to_string(), Event::new(NODE_LIST_REQUEST_EVENT))
-        .unwrap();
+        .block_unwrap();
     server_c
         .emit("A".to_string(), Event::new("ping".to_string()))
-        .unwrap();
+        .block_unwrap();
     for _ in 0..9 {
         server_b
             .emit("A".to_string(), Event::new("ping".to_string()))
-            .unwrap();
+            .block_unwrap();
     }
     server_a
         .emit("B".to_string(), Event::new("pong".to_string()))
-        .unwrap();
+        .block_unwrap();
     server_b
         .emit("C".to_string(), Event::new("ping".to_string()))
-        .unwrap();
+        .block_unwrap();
 
     // wait one second to make sure the servers were able to process the events
     for _ in 0..100 {

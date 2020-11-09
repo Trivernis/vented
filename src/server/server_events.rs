@@ -1,4 +1,5 @@
 use crate::event::Event;
+use crate::result::VentedError;
 use crate::server::data::Node;
 use crate::server::VentedServer;
 use executors::Executor;
@@ -103,7 +104,7 @@ impl VentedServer {
             move |event| {
                 let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
                 let mut future = redirect_handles.lock().remove(&payload.id)?;
-                future.set_value(true);
+                future.resolve(());
 
                 None
             }
@@ -113,7 +114,7 @@ impl VentedServer {
             move |event| {
                 let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
                 let mut future = redirect_handles.lock().remove(&payload.id)?;
-                future.set_value(false);
+                future.reject(VentedError::Rejected);
 
                 None
             }
