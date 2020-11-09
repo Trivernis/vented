@@ -25,24 +25,33 @@ fn test_server_communication() {
     let nodes = vec![
         Node {
             id: "A".to_string(),
-            address: Some("localhost:22222".to_string()),
+            addresses: vec!["localhost:22222".to_string()],
             public_key: global_secret_a.public_key(),
             trusted: true,
         },
         Node {
             id: "B".to_string(),
-            address: None,
+            addresses: vec![],
             public_key: global_secret_b.public_key(),
             trusted: false,
         },
         Node {
             id: "C".to_string(),
-            address: None,
+            addresses: vec![],
             public_key: global_secret_c.public_key(),
             trusted: false,
         },
     ];
-    let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes.clone(), 2, 100);
+    let mut nodes_a = nodes.clone();
+    for i in 0..10 {
+        nodes_a.push(Node {
+            id: format!("Node-{}", i),
+            addresses: vec!["192.168.178.1".to_string()],
+            public_key: global_secret_c.public_key(),
+            trusted: false,
+        })
+    }
+    let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes_a, 20, 100);
     let mut server_b = VentedServer::new("B".to_string(), global_secret_b, nodes.clone(), 3, 100);
     let server_c = VentedServer::new("C".to_string(), global_secret_c, nodes, 3, 100);
     let wg = server_a.listen("localhost:22222".to_string());
@@ -63,6 +72,9 @@ fn test_server_communication() {
             None
         }
     });
+    for i in 0..10 {
+        server_a.emit(format!("Nodes-{}", i), Event::new("ping"));
+    }
     server_b
         .emit("A", Event::new(NODE_LIST_REQUEST_EVENT))
         .on_success(|_| println!("Success"))

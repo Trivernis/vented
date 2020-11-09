@@ -94,7 +94,7 @@ pub struct NodeListPayload {
 pub struct NodeListElement {
     pub id: String,
     pub public_key: [u8; 32],
-    pub address: Option<String>,
+    pub addresses: Vec<String>,
 }
 
 impl VentedServer {
@@ -122,7 +122,7 @@ impl VentedServer {
         });
         self.on(REDIRECT_EVENT, {
             let manager = self.manager.clone();
-            let pool = Arc::clone(&self.pool);
+            let pool = Arc::clone(&self.sender_pool);
 
             move |event| {
                 let payload = event.get_payload::<RedirectPayload>().ok()?;
@@ -157,7 +157,7 @@ impl VentedServer {
         self.on(REDIRECT_REDIRECTED_EVENT, {
             let event_handler = Arc::clone(&self.event_handler);
             let manager = self.manager.clone();
-            let pool = self.pool.clone();
+            let pool = self.sender_pool.clone();
             let known_nodes = Arc::clone(&self.known_nodes);
 
             move |event| {
@@ -204,7 +204,7 @@ impl VentedServer {
                 let mut own_nodes = node_list.lock();
                 let origin = event.origin?;
 
-                if !own_nodes.get(&origin)?.trusted {
+                if !own_nodes.get(&origin)?.node().trusted {
                     log::warn!("Untrusted node '{}' tried to send network update!", origin);
                     return None;
                 }
@@ -218,8 +218,9 @@ impl VentedServer {
                                 id: node.id,
                                 trusted: false,
                                 public_key: PublicKey::from(node.public_key),
-                                address: node.address,
-                            },
+                                addresses: node.addresses,
+                            }
+                            .into(),
                         );
                         new_nodes += 1;
                     }
@@ -237,11 +238,11 @@ impl VentedServer {
                 let nodes = node_list
                     .lock()
                     .values()
-                    .filter(|node| node.id != sender_id)
+                    .filter(|node| node.node().id != sender_id)
                     .map(|node| NodeListElement {
-                        id: node.id.clone(),
-                        address: node.address.clone(),
-                        public_key: node.public_key.to_bytes(),
+                        id: node.node().id.clone(),
+                        addresses: node.node().addresses.clone(),
+                        public_key: node.node().public_key.to_bytes(),
                     })
                     .collect();
 

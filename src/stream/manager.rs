@@ -15,7 +15,7 @@ use crate::utils::sync::AsyncValue;
 use crate::WaitGroup;
 
 const MAX_ENQUEUED_EVENTS: usize = 50;
-const SEND_TIMEOUT_SECONDS: u64 = 60;
+pub const CONNECTION_TIMEOUT_SECONDS: u64 = 5;
 
 #[derive(Clone, Debug)]
 pub struct ConcurrentStreamManager {
@@ -55,7 +55,7 @@ impl ConcurrentStreamManager {
         if let Some(emitter) = self.emitters.lock().get(target) {
             if let Err(_) = emitter.send_timeout(
                 (event, value.clone()),
-                Duration::from_secs(SEND_TIMEOUT_SECONDS),
+                Duration::from_secs(CONNECTION_TIMEOUT_SECONDS),
             ) {
                 value.reject(VentedError::UnreachableNode(target.clone()));
             }

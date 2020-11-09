@@ -5,7 +5,7 @@ use std::mem;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_utils::sync::WaitGroup;
 use crypto_box::{PublicKey, SecretKey};
@@ -16,21 +16,23 @@ use x25519_dalek::StaticSecret;
 
 use crate::event::Event;
 use crate::event_handler::EventHandler;
-use crate::server::data::{Node, ServerConnectionContext};
+use crate::server::data::{Node, NodeData, NodeState, ServerConnectionContext};
 use crate::server::server_events::{
     AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload, VersionMismatchPayload,
     ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT,
     REDIRECT_EVENT, REJECT_EVENT,
 };
 use crate::stream::cryptostream::CryptoStream;
-use crate::stream::manager::ConcurrentStreamManager;
+use crate::stream::manager::{ConcurrentStreamManager, CONNECTION_TIMEOUT_SECONDS};
 use crate::utils::result::{VentedError, VentedResult};
 use crate::utils::sync::AsyncValue;
+use std::cmp::max;
 
 pub mod data;
 pub mod server_events;
 
 pub(crate) const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const PROTOCOL_VERSION: &str = "1.0";
 
 type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream, ()>>>>;
 
@@ -47,7 +49,7 @@ type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<Crypto
 /// let nodes = vec![
 /// Node {
 ///        id: "B".to_string(),
-///        address: None,
+///        addresses: vec![],
 ///        trusted: true,
 ///        public_key: global_secret_b.public_key() // load it from somewhere
 ///    },
@@ -68,13 +70,14 @@ type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<Crypto
 /// ```
 pub struct VentedServer {
     forwarded_connections: ForwardFutureVector,
-    known_nodes: Arc<Mutex<HashMap<String, Node>>>,
+    known_nodes: Arc<Mutex<HashMap<String, NodeData>>>,
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
     redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<(), VentedError>>>>,
     manager: ConcurrentStreamManager,
-    pool: Arc<Mutex<ScheduledThreadPool>>,
+    sender_pool: Arc<Mutex<ScheduledThreadPool>>,
+    receiver_pool: Arc<Mutex<ScheduledThreadPool>>,
 }
 
 impl VentedServer {
@@ -95,10 +98,20 @@ impl VentedServer {
             forwarded_connections: Arc::new(Mutex::new(HashMap::new())),
             global_secret_key: secret_key,
             known_nodes: Arc::new(Mutex::new(HashMap::from_iter(
-                nodes.iter().cloned().map(|node| (node.id.clone(), node)),
+                nodes
+                    .iter()
+                    .cloned()
+                    .map(|node| (node.id.clone(), node.into())),
             ))),
             redirect_handles: Arc::new(Mutex::new(HashMap::new())),
-            pool: Arc::new(Mutex::new(ScheduledThreadPool::new(num_threads))),
+            sender_pool: Arc::new(Mutex::new(ScheduledThreadPool::new(max(
+                num_threads / 2,
+                1,
+            )))),
+            receiver_pool: Arc::new(Mutex::new(ScheduledThreadPool::new(max(
+                num_threads / 2,
+                1,
+            )))),
         };
         server.register_events();
         server.start_event_listener();
@@ -113,11 +126,16 @@ impl VentedServer {
 
     /// Returns the nodes known to the server
     pub fn nodes(&self) -> Vec<Node> {
-        self.known_nodes.lock().values().cloned().collect()
+        self.known_nodes
+            .lock()
+            .values()
+            .cloned()
+            .map(Node::from)
+            .collect()
     }
 
     /// Returns the actual reference to the inner node list
-    pub fn nodes_ref(&self) -> Arc<Mutex<HashMap<String, Node>>> {
+    pub fn nodes_ref(&self) -> Arc<Mutex<HashMap<String, NodeData>>> {
         Arc::clone(&self.known_nodes)
     }
 
@@ -180,10 +198,11 @@ impl VentedServer {
             global_secret: self.global_secret_key.clone(),
             known_nodes: Arc::clone(&self.known_nodes),
             event_handler: Arc::clone(&self.event_handler),
-            pool: Arc::clone(&self.pool),
+            sender_pool: Arc::clone(&self.sender_pool),
             forwarded_connections: Arc::clone(&self.forwarded_connections),
             redirect_handles: Arc::clone(&self.redirect_handles),
             manager: self.manager.clone(),
+            recv_pool: Arc::clone(&self.receiver_pool),
         }
     }
 
@@ -199,6 +218,9 @@ impl VentedServer {
             move || {
                 mem::drop(wg);
                 while let Ok((origin, event)) = receiver.recv() {
+                    if let Some(node) = context.known_nodes.lock().get_mut(&origin) {
+                        node.set_node_state(NodeState::Alive(Instant::now()));
+                    }
                     let responses = event_handler.lock().handle_event(event);
 
                     for response in responses {
@@ -220,34 +242,64 @@ impl VentedServer {
         event: Event,
         redirect: bool,
     ) -> AsyncValue<(), VentedError> {
+        log::trace!(
+            "Emitting: '{}' from {} to {}",
+            event.name,
+            context.node_id,
+            target
+        );
         if context.manager.has_connection(target) {
+            log::trace!("Reusing existing connection.");
             context.manager.send(target, event)
         } else {
             let future = AsyncValue::new();
 
-            context.pool.lock().execute({
+            context.sender_pool.lock().execute({
                 let mut future = AsyncValue::clone(&future);
                 let node_id = target.clone();
                 let context = context.clone();
 
                 move || {
-                    log::trace!(
-                        "Trying to redirect the event to a different node to be sent to target node..."
-                    );
-                    if let Ok(connection) = Self::get_connection(context.clone(), &node_id) {
+                    log::trace!("Trying to establish connection...");
+                    let node_state = if let Ok(connection) =
+                        Self::get_connection(context.clone(), &node_id)
+                    {
                         if let Err(e) = context.manager.add_connection(connection) {
                             future.reject(e);
                             return;
                         }
                         log::trace!("Established new connection.");
                         let result = context.manager.send(&node_id, event).get_value();
-                        future.result(result);
+                        match result {
+                            Ok(_) => {
+                                future.resolve(());
+                                NodeState::Alive(Instant::now())
+                            }
+                            Err(e) => {
+                                future.reject(e);
+                                NodeState::Dead(Instant::now())
+                            }
+                        }
                     } else if redirect {
-                        log::trace!("Trying to send event redirected");
-                        let result = Self::send_event_redirected(context, &node_id, event);
-                        future.result(result);
+                        log::trace!("Trying to use a proxy node...");
+                        let result = Self::send_event_redirected(context.clone(), &node_id, event);
+                        match result {
+                            Ok(_) => {
+                                future.resolve(());
+                                NodeState::Alive(Instant::now())
+                            }
+                            Err(e) => {
+                                future.reject(e);
+                                NodeState::Dead(Instant::now())
+                            }
+                        }
                     } else {
-                        future.reject(VentedError::UnreachableNode(node_id))
+                        log::trace!("Failed to emit event to node {}", node_id);
+                        future.reject(VentedError::UnreachableNode(node_id.clone()));
+                        NodeState::Dead(Instant::now())
+                    };
+                    if let Some(node) = context.known_nodes.lock().get_mut(&node_id) {
+                        node.set_node_state(node_state);
                     }
                 }
             });
@@ -266,14 +318,14 @@ impl VentedServer {
             .known_nodes
             .lock()
             .values()
-            .filter(|node| node.address.is_some())
+            .filter(|node| !node.node().addresses.is_empty() && node.is_alive())
             .cloned()
-            .collect::<Vec<Node>>();
+            .collect::<Vec<NodeData>>();
 
         for node in public_nodes {
             let payload = RedirectPayload::new(
                 context.node_id.clone(),
-                node.id.clone(),
+                node.node().id.clone(),
                 target.clone(),
                 event.clone().as_bytes(),
             );
@@ -285,17 +337,21 @@ impl VentedServer {
 
             if let Err(e) = Self::send_event(
                 context.clone(),
-                &node.id,
+                &node.node().id,
                 Event::with_payload(REDIRECT_EVENT, &payload),
                 false,
             )
             .get_value()
             {
-                log::error!("Failed to redirect via {}: {}", node.id, e);
+                log::error!("Failed to redirect via {}: {}", node.node().id, e);
             }
 
-            if let Some(Ok(_)) = future.get_value_with_timeout(Duration::from_secs(10)) {
+            if let Some(Ok(_)) =
+                future.get_value_with_timeout(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS))
+            {
                 return Ok(());
+            } else {
+                log::error!("Failed to redirect via {}: Timeout", node.node().id);
             }
         }
 
@@ -306,12 +362,14 @@ impl VentedServer {
     /// then establishing an encrypted connection
     fn handle_connection(context: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
         let event_handler = Arc::clone(&context.event_handler);
+        stream.set_read_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         log::trace!(
             "Received connection from {}",
             stream.peer_addr().expect("Failed to get peer address")
         );
 
-        context.pool.lock().execute({
+        context.recv_pool.lock().execute({
             let context = context.clone();
             move || {
                 let manager = context.manager.clone();
@@ -349,15 +407,27 @@ impl VentedServer {
             .cloned()
             .ok_or(VentedError::UnknownNode(target.clone()))?;
 
-        if let Some(address) = target_node.address {
-            log::trace!("Connecting to known address");
+        log::trace!("Connecting to known addresses");
 
-            Self::connect(context, address)
-        } else {
-            log::trace!("All direct connection attempts to {} failed", target);
-
-            Err(VentedError::UnreachableNode(target.clone()))
+        for address in &target_node.node().addresses {
+            match Self::connect(context.clone(), address.clone()) {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    log::error!("Failed to connect to node {}'s address: {}", target, e);
+                    context
+                        .known_nodes
+                        .lock()
+                        .get_mut(target)
+                        .unwrap()
+                        .node_mut()
+                        .addresses
+                        .retain(|a| a != address);
+                }
+            }
         }
+
+        log::trace!("All direct connection attempts to {} failed", target);
+        Err(VentedError::UnreachableNode(target.clone()))
     }
 
     /// Establishes a crypto stream for the given stream
@@ -365,9 +435,6 @@ impl VentedServer {
         context: ServerConnectionContext,
         stream: TcpStream,
     ) -> VentedResult<CryptoStream> {
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-
         let (_, stream) = VentedServer::perform_key_exchange(
             context.is_server,
             stream,
@@ -385,6 +452,8 @@ impl VentedServer {
         address: String,
     ) -> VentedResult<CryptoStream> {
         let stream = TcpStream::connect(address)?;
+        stream.set_read_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
         context.is_server = false;
         let stream = Self::get_crypto_stream(context, stream)?;
 
@@ -397,7 +466,7 @@ impl VentedServer {
         stream: TcpStream,
         own_node_id: String,
         global_secret: SecretKey,
-        known_nodes: Arc<Mutex<HashMap<String, Node>>>,
+        known_nodes: Arc<Mutex<HashMap<String, NodeData>>>,
     ) -> VentedResult<(String, CryptoStream)> {
         let secret_key = SecretKey::generate(&mut rand::thread_rng());
         if is_server {
@@ -425,7 +494,7 @@ impl VentedServer {
         secret_key: &SecretKey,
         own_node_id: String,
         global_secret: SecretKey,
-        known_nodes: Arc<Mutex<HashMap<String, Node>>>,
+        known_nodes: Arc<Mutex<HashMap<String, NodeData>>>,
     ) -> VentedResult<(String, CryptoStream)> {
         stream.write(
             &Event::with_payload(
@@ -433,7 +502,7 @@ impl VentedServer {
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
                     node_id: own_node_id,
-                    vented_version: CRATE_VERSION.to_string(),
+                    vented_version: PROTOCOL_VERSION.to_string(),
                 },
             )
             .as_bytes(),
@@ -450,11 +519,11 @@ impl VentedServer {
             vented_version,
         } = event.get_payload::<NodeInformationPayload>().unwrap();
 
-        if !Self::compare_version(&vented_version, CRATE_VERSION) {
+        if !Self::compare_version(&vented_version, PROTOCOL_VERSION) {
             stream.write(
                 &Event::with_payload(
                     MISMATCH_EVENT,
-                    &VersionMismatchPayload::new(CRATE_VERSION, &vented_version),
+                    &VersionMismatchPayload::new(PROTOCOL_VERSION, &vented_version),
                 )
                 .as_bytes(),
             )?;
@@ -475,7 +544,7 @@ impl VentedServer {
         let mut stream = CryptoStream::new(node_id.clone(), stream, &public_key, &secret_key)?;
 
         log::trace!("Authenticating recipient...");
-        let key_a = Self::authenticate_other(&mut stream, node_data.public_key)?;
+        let key_a = Self::authenticate_other(&mut stream, node_data.node().public_key)?;
         log::trace!("Authenticating self...");
         let key_b =
             Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
@@ -497,7 +566,7 @@ impl VentedServer {
         secret_key: &SecretKey,
         own_node_id: String,
         global_secret: SecretKey,
-        known_nodes: Arc<Mutex<HashMap<String, Node>>>,
+        known_nodes: Arc<Mutex<HashMap<String, NodeData>>>,
     ) -> VentedResult<(String, CryptoStream)> {
         let event = Event::from_bytes(&mut stream)?;
         if event.name != CONNECT_EVENT {
@@ -509,11 +578,11 @@ impl VentedServer {
             vented_version,
         } = event.get_payload::<NodeInformationPayload>().unwrap();
 
-        if !Self::compare_version(&vented_version, CRATE_VERSION) {
+        if !Self::compare_version(&vented_version, PROTOCOL_VERSION) {
             stream.write(
                 &Event::with_payload(
                     MISMATCH_EVENT,
-                    &VersionMismatchPayload::new(CRATE_VERSION, &vented_version),
+                    &VersionMismatchPayload::new(PROTOCOL_VERSION, &vented_version),
                 )
                 .as_bytes(),
             )?;
@@ -536,7 +605,7 @@ impl VentedServer {
                 &NodeInformationPayload {
                     public_key: secret_key.public_key().to_bytes(),
                     node_id: own_node_id,
-                    vented_version: CRATE_VERSION.to_string(),
+                    vented_version: PROTOCOL_VERSION.to_string(),
                 },
             )
             .as_bytes(),
@@ -549,7 +618,7 @@ impl VentedServer {
         let key_a =
             Self::authenticate_self(&mut stream, StaticSecret::from(global_secret.to_bytes()))?;
         log::trace!("Authenticating recipient...");
-        let key_b = Self::authenticate_other(&mut stream, node_data.public_key)?;
+        let key_b = Self::authenticate_other(&mut stream, node_data.node().public_key)?;
         log::trace!("Connection fully authenticated.");
 
         let pre_secret = StaticSecret::from(secret_key.to_bytes()).diffie_hellman(&public_key);
