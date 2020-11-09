@@ -7,14 +7,14 @@ use executors::{crossbeam_workstealing_pool, Executor};
 use crate::crypto::CryptoStream;
 use crate::event::Event;
 use crate::event_handler::EventHandler;
-use crate::result::VentedError::UnknownNode;
-use crate::result::{VentedError, VentedResult};
-use crate::server::data::{AsyncValue, Node, ServerConnectionContext};
+use crate::server::data::{Node, ServerConnectionContext};
 use crate::server::server_events::{
     AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload, VersionMismatchPayload,
     ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT,
     REDIRECT_EVENT, REJECT_EVENT,
 };
+use crate::utils::result::{VentedError, VentedResult};
+use crate::utils::sync::AsyncValue;
 use crossbeam_utils::sync::WaitGroup;
 use executors::parker::DynParker;
 use parking_lot::Mutex;
@@ -459,7 +459,7 @@ impl VentedServer {
         } else {
             stream.write(&Event::new(REJECT_EVENT).as_bytes())?;
             stream.flush()?;
-            return Err(UnknownNode(node_id));
+            return Err(VentedError::UnknownNode(node_id));
         };
 
         let mut stream = CryptoStream::new(node_id.clone(), stream, &public_key, &secret_key)?;
@@ -517,7 +517,7 @@ impl VentedServer {
         } else {
             stream.write(&Event::new(REJECT_EVENT).as_bytes())?;
             stream.flush()?;
-            return Err(UnknownNode(node_id));
+            return Err(VentedError::UnknownNode(node_id));
         };
 
         stream.write(

@@ -1,10 +1,9 @@
 use std::io::Read;
 
+use crate::utils::result::{VentedError, VentedResult};
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-
-use crate::result::{VentedError, VentedResult};
 
 pub trait GenericEvent {}
 

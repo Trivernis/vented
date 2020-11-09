@@ -91,6 +91,7 @@ fn test_server_communication() {
     });
     server_b
         .emit("A".to_string(), Event::new(NODE_LIST_REQUEST_EVENT))
+        .on_success(|_| println!("Success"))
         .block_unwrap();
     server_c
         .emit("A".to_string(), Event::new("ping".to_string()))

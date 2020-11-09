@@ -1,7 +1,7 @@
 use crate::event::Event;
-use crate::result::VentedError;
 use crate::server::data::Node;
 use crate::server::VentedServer;
+use crate::utils::result::VentedError;
 use executors::Executor;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};

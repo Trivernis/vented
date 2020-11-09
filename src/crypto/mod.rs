@@ -10,8 +10,8 @@ use sha2::Digest;
 use typenum::U24;
 
 use crate::event::Event;
-use crate::result::VentedResult;
 
+use crate::utils::result::VentedResult;
 use crypto_box::ChaChaBox;
 pub use crypto_box::PublicKey;
 pub use crypto_box::SecretKey;
