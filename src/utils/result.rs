@@ -1,6 +1,7 @@
-use crate::server::CRATE_VERSION;
 use std::error::Error;
 use std::{fmt, io};
+
+use crate::server::CRATE_VERSION;
 
 pub type VentedResult<T> = Result<T, VentedError>;
 
@@ -18,6 +19,7 @@ pub enum VentedError {
     Rejected,
     AuthFailed,
     VersionMismatch(String),
+    TooManyThreads,
 }
 
 impl fmt::Display for VentedError {
@@ -39,6 +41,7 @@ impl fmt::Display for VentedError {
                 CRATE_VERSION, version
             ),
             Self::UnreachableNode(node) => write!(f, "Node {} can't be reached", node),
+            Self::TooManyThreads => write!(f, "Could not start threads. Thread limit reached."),
         }
     }
 }

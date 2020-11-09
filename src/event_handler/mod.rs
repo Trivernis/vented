@@ -20,8 +20,8 @@ impl EventHandler {
 
     /// Adds a handler for the given event
     pub fn on<F: 'static>(&mut self, event_name: &str, handler: F)
-    where
-        F: Fn(Event) -> Option<Event> + Send + Sync,
+        where
+            F: Fn(Event) -> Option<Event> + Send + Sync,
     {
         match self.event_handlers.get_mut(event_name) {
             Some(handlers) => handlers.push(Box::new(handler)),

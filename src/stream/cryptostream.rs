@@ -3,18 +3,16 @@ use std::net::TcpStream;
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ByteOrder};
+use crypto_box::{ChaChaBox, SecretKey};
 use crypto_box::aead::{Aead, Payload};
+use generic_array::GenericArray;
 use parking_lot::Mutex;
-use sha2::digest::generic_array::GenericArray;
 use sha2::Digest;
-use typenum::U24;
+use typenum::*;
+use x25519_dalek::PublicKey;
 
 use crate::event::Event;
-
 use crate::utils::result::VentedResult;
-use crypto_box::ChaChaBox;
-pub use crypto_box::PublicKey;
-pub use crypto_box::SecretKey;
 
 /// A cryptographical stream object that handles encryption and decryption of streams
 #[derive(Clone)]
@@ -104,16 +102,16 @@ impl CryptoStream {
 }
 
 pub struct EncryptionBox<T>
-where
-    T: Aead,
+    where
+        T: Aead,
 {
     inner: T,
     counter: u128,
 }
 
 impl<T> EncryptionBox<T>
-where
-    T: Aead,
+    where
+        T: Aead,
 {
     /// Creates a new encryption box with the given inner value
     pub fn new(inner: T) -> Self {

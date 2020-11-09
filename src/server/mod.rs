@@ -1,10 +1,19 @@
 use std::collections::HashMap;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::io::Write;
+use std::iter::FromIterator;
+use std::mem;
+use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
+use crossbeam_utils::sync::WaitGroup;
 use crypto_box::{PublicKey, SecretKey};
-use executors::{crossbeam_workstealing_pool, Executor};
+use parking_lot::Mutex;
+use scheduled_thread_pool::ScheduledThreadPool;
+use sha2::Digest;
+use x25519_dalek::StaticSecret;
 
-use crate::crypto::CryptoStream;
 use crate::event::Event;
 use crate::event_handler::EventHandler;
 use crate::server::data::{Node, ServerConnectionContext};
@@ -13,19 +22,10 @@ use crate::server::server_events::{
     ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT,
     REDIRECT_EVENT, REJECT_EVENT,
 };
+use crate::stream::cryptostream::CryptoStream;
+use crate::stream::manager::ConcurrentStreamManager;
 use crate::utils::result::{VentedError, VentedResult};
 use crate::utils::sync::AsyncValue;
-use crossbeam_utils::sync::WaitGroup;
-use executors::parker::DynParker;
-use parking_lot::Mutex;
-use sha2::Digest;
-use std::io::Write;
-use std::iter::FromIterator;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-use x25519_dalek::StaticSecret;
 
 pub mod data;
 pub mod server_events;
@@ -33,14 +33,13 @@ pub mod server_events;
 pub(crate) const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream, ()>>>>;
-type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 
 /// The vented server that provides parallel handling of connections
 /// Usage:
 /// ```rust
 /// use vented::server::VentedServer;
 /// use vented::server::data::Node;
-/// use vented::crypto::SecretKey;
+/// use vented::stream::SecretKey;
 /// use rand::thread_rng;
 /// use vented::event::Event;
 ///
@@ -56,7 +55,7 @@ type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 /// // in a real world example the secret key needs to be loaded from somewhere because connections
 /// // with unknown keys are not accepted.
 /// let global_secret = SecretKey::generate(&mut thread_rng());
-/// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4);
+/// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4, 100);
 ///
 ///
 /// server.listen("localhost:20000".to_string());
@@ -65,19 +64,17 @@ type CryptoStreamMap = Arc<Mutex<HashMap<String, CryptoStream>>>;
 ///    
 ///    None    // the return value is the response event Option<Event>
 /// });
-/// assert!(server.emit("B".to_string(), Event::new("ping".to_string())).get_value().is_err()) // this won't work without a known node B
+/// assert!(server.emit("B", Event::new("ping".to_string())).get_value().is_err()) // this won't work without a known node B
 /// ```
 pub struct VentedServer {
-    connections: CryptoStreamMap,
     forwarded_connections: ForwardFutureVector,
     known_nodes: Arc<Mutex<HashMap<String, Node>>>,
-    pool: crossbeam_workstealing_pool::ThreadPool<DynParker>,
     event_handler: Arc<Mutex<EventHandler>>,
     global_secret_key: SecretKey,
     node_id: String,
     redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<(), VentedError>>>>,
-    listener_count: Arc<AtomicUsize>,
-    num_threads: usize,
+    manager: ConcurrentStreamManager,
+    pool: Arc<Mutex<ScheduledThreadPool>>,
 }
 
 impl VentedServer {
@@ -89,22 +86,22 @@ impl VentedServer {
         secret_key: SecretKey,
         nodes: Vec<Node>,
         num_threads: usize,
+        max_threads: usize,
     ) -> Self {
         let mut server = Self {
             node_id,
-            num_threads,
+            manager: ConcurrentStreamManager::new(max_threads),
             event_handler: Arc::new(Mutex::new(EventHandler::new())),
-            pool: executors::crossbeam_workstealing_pool::pool_with_auto_parker(num_threads),
-            connections: Arc::new(Mutex::new(HashMap::new())),
             forwarded_connections: Arc::new(Mutex::new(HashMap::new())),
             global_secret_key: secret_key,
             known_nodes: Arc::new(Mutex::new(HashMap::from_iter(
                 nodes.iter().cloned().map(|node| (node.id.clone(), node)),
             ))),
             redirect_handles: Arc::new(Mutex::new(HashMap::new())),
-            listener_count: Arc::new(AtomicUsize::new(0)),
+            pool: Arc::new(Mutex::new(ScheduledThreadPool::new(num_threads))),
         };
         server.register_events();
+        server.start_event_listener();
 
         server
     }
@@ -126,35 +123,9 @@ impl VentedServer {
 
     /// Emits an event to the specified Node
     /// The actual writing is done in a separate thread from the thread pool.
-    /// With the returned wait group one can wait for the event to be written.
-    pub fn emit(&self, node_id: String, event: Event) -> AsyncValue<(), VentedError> {
-        let future = AsyncValue::new();
-
-        self.pool.execute({
-            let mut future = AsyncValue::clone(&future);
-            let context = self.get_server_context();
-            move || {
-
-                if let Ok(stream) = Self::get_connection(context.clone(), &node_id) {
-                    if let Err(e) = stream.send(event) {
-                        log::error!("Failed to send event: {}", e);
-                        context.connections.lock().remove(stream.receiver_node());
-
-                        future.reject(e);
-                    } else {
-                        future.resolve(());
-                    }
-                } else {
-                    log::trace!(
-                        "Trying to redirect the event to a different node to be sent to target node..."
-                    );
-                    let result = Self::send_event_redirected(context.clone(), node_id, event);
-                    future.result(result);
-                }
-            }
-        });
-
-        future
+    /// For that reason an Async value is returned to use it to wait for the result
+    pub fn emit<S: ToString>(&self, node_id: S, event: Event) -> AsyncValue<(), VentedError> {
+        Self::send_event(self.get_server_context(), &node_id.to_string(), event, true)
     }
 
     /// Adds a handler for the given event.
@@ -175,8 +146,6 @@ impl VentedServer {
         let context = self.get_server_context();
         let wg = WaitGroup::new();
         let wg2 = WaitGroup::clone(&wg);
-        let num_threads = self.num_threads;
-        let listener_count = Arc::clone(&self.listener_count);
 
         thread::spawn(move || match TcpListener::bind(&address) {
             Ok(listener) => {
@@ -186,17 +155,8 @@ impl VentedServer {
                 for connection in listener.incoming() {
                     match connection {
                         Ok(stream) => {
-                            let listener_count = listener_count.load(Ordering::Relaxed);
-
-                            if listener_count >= num_threads {
-                                log::warn!("Connection limit reached. Shutting down incoming connection...");
-                                if let Err(e) = stream.shutdown(Shutdown::Both) {
-                                    log::error!("Failed to shutdown connection: {}", e)
-                                }
-                            } else {
-                                if let Err(e) = Self::handle_connection(context.clone(), stream) {
-                                    log::error!("Failed to handle connection: {}", e);
-                                }
+                            if let Err(e) = Self::handle_connection(context.clone(), stream) {
+                                log::error!("Failed to handle connection: {}", e);
                             }
                         }
                         Err(e) => log::trace!("Failed to establish connection: {}", e),
@@ -219,19 +179,87 @@ impl VentedServer {
             node_id: self.node_id.clone(),
             global_secret: self.global_secret_key.clone(),
             known_nodes: Arc::clone(&self.known_nodes),
-            connections: Arc::clone(&self.connections),
             event_handler: Arc::clone(&self.event_handler),
-            pool: self.pool.clone(),
+            pool: Arc::clone(&self.pool),
             forwarded_connections: Arc::clone(&self.forwarded_connections),
             redirect_handles: Arc::clone(&self.redirect_handles),
-            listener_count: Arc::clone(&self.listener_count),
+            manager: self.manager.clone(),
+        }
+    }
+
+    /// Starts the event listener thread
+    fn start_event_listener(&self) {
+        let receiver = self.manager.receiver();
+        let event_handler = Arc::clone(&self.event_handler);
+        let context = self.get_server_context();
+        let wg = WaitGroup::new();
+
+        thread::spawn({
+            let wg = WaitGroup::clone(&wg);
+            move || {
+                mem::drop(wg);
+                while let Ok((origin, event)) = receiver.recv() {
+                    let responses = event_handler.lock().handle_event(event);
+
+                    for response in responses {
+                        Self::send_event(context.clone(), &origin, response, true);
+                    }
+                }
+                log::warn!("Event listener stopped!");
+            }
+        });
+        wg.wait();
+    }
+
+    /// Sends an event asynchronously to a node
+    /// The redirect flag is used to determine if it should be tried to redirect an event after
+    /// a direct sending attempt failed
+    fn send_event(
+        context: ServerConnectionContext,
+        target: &String,
+        event: Event,
+        redirect: bool,
+    ) -> AsyncValue<(), VentedError> {
+        if context.manager.has_connection(target) {
+            context.manager.send(target, event)
+        } else {
+            let future = AsyncValue::new();
+
+            context.pool.lock().execute({
+                let mut future = AsyncValue::clone(&future);
+                let node_id = target.clone();
+                let context = context.clone();
+
+                move || {
+                    log::trace!(
+                        "Trying to redirect the event to a different node to be sent to target node..."
+                    );
+                    if let Ok(connection) = Self::get_connection(context.clone(), &node_id) {
+                        if let Err(e) = context.manager.add_connection(connection) {
+                            future.reject(e);
+                            return;
+                        }
+                        log::trace!("Established new connection.");
+                        let result = context.manager.send(&node_id, event).get_value();
+                        future.result(result);
+                    } else if redirect {
+                        log::trace!("Trying to send event redirected");
+                        let result = Self::send_event_redirected(context, &node_id, event);
+                        future.result(result);
+                    } else {
+                        future.reject(VentedError::UnreachableNode(node_id))
+                    }
+                }
+            });
+
+            future
         }
     }
 
     /// Tries to send an event redirected by emitting a redirect event to all public nodes
     fn send_event_redirected(
         context: ServerConnectionContext,
-        target: String,
+        target: &String,
         event: Event,
     ) -> VentedResult<()> {
         let public_nodes = context
@@ -255,66 +283,54 @@ impl VentedServer {
                 .lock()
                 .insert(payload.id, AsyncValue::clone(&future));
 
-            if let Ok(stream) = Self::get_connection(context.clone(), &node.id) {
-                if let Err(e) = stream.send(Event::with_payload(REDIRECT_EVENT, &payload)) {
-                    log::error!("Failed to send event: {}", e);
-                    context.connections.lock().remove(stream.receiver_node());
-                }
+            if let Err(e) = Self::send_event(
+                context.clone(),
+                &node.id,
+                Event::with_payload(REDIRECT_EVENT, &payload),
+                false,
+            )
+            .get_value()
+            {
+                log::error!("Failed to redirect via {}: {}", node.id, e);
             }
 
-            if let Some(Ok(_)) = future.get_value_with_timeout(Duration::from_secs(1)) {
+            if let Some(Ok(_)) = future.get_value_with_timeout(Duration::from_secs(10)) {
                 return Ok(());
             }
         }
 
-        Err(VentedError::UnreachableNode(target))
+        Err(VentedError::UnreachableNode(target.clone()))
     }
 
     /// Handles a single connection by first performing a key exchange and
     /// then establishing an encrypted connection
-    fn handle_connection(params: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
-        let event_handler = Arc::clone(&params.event_handler);
+    fn handle_connection(context: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
+        let event_handler = Arc::clone(&context.event_handler);
         log::trace!(
             "Received connection from {}",
             stream.peer_addr().expect("Failed to get peer address")
         );
 
-        thread::spawn(move || {
-            let connections = Arc::clone(&params.connections);
-            let listener_count = Arc::clone(&params.listener_count);
-            listener_count.fetch_add(1, Ordering::Relaxed);
+        context.pool.lock().execute({
+            let context = context.clone();
+            move || {
+                let manager = context.manager.clone();
 
-            let stream = match VentedServer::get_crypto_stream(params, stream) {
-                Ok(stream) => stream,
-                Err(e) => {
-                    log::error!("Failed to establish encrypted connection: {}", e);
+                let stream = match VentedServer::get_crypto_stream(context, stream) {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        log::error!("Failed to establish encrypted connection: {}", e);
+                        return;
+                    }
+                };
+                log::trace!("Secure connection established.");
+                if let Err(e) = manager.add_connection(stream) {
+                    log::trace!("Failed to add connection to manager: {}", e);
                     return;
                 }
-            };
-            log::trace!("Secure connection established.");
-            event_handler.lock().handle_event(Event::new(READY_EVENT));
-            if let Err(e) = Self::handle_read(event_handler, &stream) {
-                log::error!("Connection aborted: {}", e);
+                event_handler.lock().handle_event(Event::new(READY_EVENT));
             }
-
-            connections.lock().remove(stream.receiver_node());
-            listener_count.fetch_sub(1, Ordering::Relaxed);
         });
-
-        Ok(())
-    }
-
-    /// Handler for reading after the connection is established
-    fn handle_read(
-        event_handler: Arc<Mutex<EventHandler>>,
-        stream: &CryptoStream,
-    ) -> VentedResult<()> {
-        while let Ok(mut event) = stream.read() {
-            event.origin = Some(stream.receiver_node().clone());
-            for response in event_handler.lock().handle_event(event) {
-                stream.send(response)?
-            }
-        }
 
         Ok(())
     }
@@ -326,14 +342,6 @@ impl VentedServer {
         context: ServerConnectionContext,
         target: &String,
     ) -> VentedResult<CryptoStream> {
-        log::trace!("Trying to connect to {}", target);
-
-        if let Some(stream) = context.connections.lock().get(target) {
-            log::trace!("Reusing existing connection.");
-
-            return Ok(CryptoStream::clone(stream));
-        }
-
         let target_node = context
             .known_nodes
             .lock()
@@ -354,24 +362,19 @@ impl VentedServer {
 
     /// Establishes a crypto stream for the given stream
     fn get_crypto_stream(
-        params: ServerConnectionContext,
+        context: ServerConnectionContext,
         stream: TcpStream,
     ) -> VentedResult<CryptoStream> {
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
-        let (node_id, stream) = VentedServer::perform_key_exchange(
-            params.is_server,
+        let (_, stream) = VentedServer::perform_key_exchange(
+            context.is_server,
             stream,
-            params.node_id.clone(),
-            params.global_secret,
-            params.known_nodes,
+            context.node_id.clone(),
+            context.global_secret,
+            context.known_nodes,
         )?;
-
-        params
-            .connections
-            .lock()
-            .insert(node_id, CryptoStream::clone(&stream));
 
         Ok(stream)
     }
@@ -383,25 +386,7 @@ impl VentedServer {
     ) -> VentedResult<CryptoStream> {
         let stream = TcpStream::connect(address)?;
         context.is_server = false;
-
-        let connections = Arc::clone(&context.connections);
-        let event_handler = Arc::clone(&context.event_handler);
-        let listener_count = Arc::clone(&context.listener_count);
         let stream = Self::get_crypto_stream(context, stream)?;
-
-        thread::spawn({
-            let stream = CryptoStream::clone(&stream);
-
-            move || {
-                listener_count.fetch_add(1, Ordering::Relaxed);
-                event_handler.lock().handle_event(Event::new(READY_EVENT));
-                if let Err(e) = Self::handle_read(event_handler, &stream) {
-                    log::error!("Connection aborted: {}", e);
-                }
-                connections.lock().remove(stream.receiver_node());
-                listener_count.fetch_sub(1, Ordering::Relaxed);
-            }
-        });
 
         Ok(stream)
     }

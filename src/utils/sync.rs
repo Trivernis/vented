@@ -1,8 +1,10 @@
-use crate::WaitGroup;
-use parking_lot::Mutex;
+use std::{mem, thread};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{mem, thread};
+
+use parking_lot::Mutex;
+
+use crate::WaitGroup;
 
 pub struct AsyncValue<V, E> {
     value: Arc<Mutex<Option<V>>>,
@@ -13,8 +15,8 @@ pub struct AsyncValue<V, E> {
 }
 
 impl<V, E> AsyncValue<V, E>
-where
-    E: std::fmt::Display,
+    where
+        E: std::fmt::Display,
 {
     /// Creates the future with no value
     pub fn new() -> Self {
@@ -49,8 +51,8 @@ where
     }
 
     pub fn on_error<F>(&mut self, cb: F) -> &mut Self
-    where
-        F: FnOnce(&E) -> () + Send + Sync + 'static,
+        where
+            F: FnOnce(&E) -> () + Send + Sync + 'static,
     {
         self.err_cb.lock().replace(Box::new(cb));
 
@@ -58,8 +60,8 @@ where
     }
 
     pub fn on_success<F>(&mut self, cb: F) -> &mut Self
-    where
-        F: FnOnce(&V) -> () + Send + Sync + 'static,
+        where
+            F: FnOnce(&V) -> () + Send + Sync + 'static,
     {
         self.ok_cb.lock().replace(Box::new(cb));
 

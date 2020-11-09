@@ -1,12 +1,13 @@
+use std::sync::Arc;
+
+use rand::{thread_rng, RngCore};
+use serde::{Deserialize, Serialize};
+use x25519_dalek::PublicKey;
+
 use crate::event::Event;
 use crate::server::data::Node;
 use crate::server::VentedServer;
 use crate::utils::result::VentedError;
-use executors::Executor;
-use rand::{thread_rng, RngCore};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use x25519_dalek::PublicKey;
 
 pub(crate) const CONNECT_EVENT: &str = "conn:connect";
 pub(crate) const AUTH_EVENT: &str = "conn:authenticate";
@@ -21,7 +22,7 @@ pub(crate) const REDIRECT_REDIRECTED_EVENT: &str = "conn:redirect_redirected";
 pub const NODE_LIST_REQUEST_EVENT: &str = "conn:node_list_request";
 pub const NODE_LIST_EVENT: &str = "conn:node_list";
 
-pub const READY_EVENT: &str = "server:ready";
+pub(crate) const READY_EVENT: &str = "server:ready";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct NodeInformationPayload {
@@ -120,59 +121,73 @@ impl VentedServer {
             }
         });
         self.on(REDIRECT_EVENT, {
-            let connections = Arc::clone(&self.connections);
+            let manager = self.manager.clone();
+            let pool = Arc::clone(&self.pool);
 
             move |event| {
                 let payload = event.get_payload::<RedirectPayload>().ok()?;
-                let stream = connections.lock().get(&payload.target)?.clone();
-                if stream
-                    .send(Event::with_payload(REDIRECT_REDIRECTED_EVENT, &payload))
-                    .is_ok()
-                {
-                    Some(Event::with_payload(
-                        REDIRECT_CONFIRM_EVENT,
-                        &RedirectResponsePayload { id: payload.id },
-                    ))
-                } else {
-                    Some(Event::with_payload(
-                        REDIRECT_FAIL_EVENT,
-                        &RedirectResponsePayload { id: payload.id },
-                    ))
-                }
+                let origin = event.origin?;
+                let manager = manager.clone();
+
+                pool.lock().execute(move || {
+                    let response = if manager
+                        .send(
+                            &payload.target,
+                            Event::with_payload(REDIRECT_REDIRECTED_EVENT, &payload),
+                        )
+                        .get_value()
+                        .is_ok()
+                    {
+                        Event::with_payload(
+                            REDIRECT_CONFIRM_EVENT,
+                            &RedirectResponsePayload { id: payload.id },
+                        )
+                    } else {
+                        Event::with_payload(
+                            REDIRECT_FAIL_EVENT,
+                            &RedirectResponsePayload { id: payload.id },
+                        )
+                    };
+                    manager.send(&origin, response);
+                });
+
+                None
             }
         });
         self.on(REDIRECT_REDIRECTED_EVENT, {
             let event_handler = Arc::clone(&self.event_handler);
-            let connections = Arc::clone(&self.connections);
+            let manager = self.manager.clone();
             let pool = self.pool.clone();
             let known_nodes = Arc::clone(&self.known_nodes);
 
             move |event| {
                 let payload = event.get_payload::<RedirectPayload>().ok()?;
                 let event = Event::from_bytes(&mut &payload.content[..]).ok()?;
-                let proxy_stream = connections.lock().get(&payload.proxy)?.clone();
 
                 if known_nodes.lock().contains_key(&payload.source) {
-                    pool.execute({
+                    pool.lock().execute({
                         let event_handler = Arc::clone(&event_handler);
+                        let manager = manager.clone();
                         move || {
-                            let response = event_handler.lock().handle_event(event);
-                            let event = response.first().cloned().map(|mut value| {
-                                Event::with_payload(
-                                    REDIRECT_EVENT,
-                                    &RedirectPayload::new(
-                                        payload.target,
-                                        payload.proxy,
-                                        payload.source,
-                                        value.as_bytes(),
-                                    ),
-                                )
-                            });
-                            if let Some(event) = event {
-                                proxy_stream
-                                    .send(event)
-                                    .expect("Failed to respond to redirected event.");
-                            }
+                            let responses = event_handler.lock().handle_event(event);
+                            responses
+                                .iter()
+                                .cloned()
+                                .map(|mut value| {
+                                    let payload = payload.clone();
+                                    Event::with_payload(
+                                        REDIRECT_EVENT,
+                                        &RedirectPayload::new(
+                                            payload.target,
+                                            payload.proxy,
+                                            payload.source,
+                                            value.as_bytes(),
+                                        ),
+                                    )
+                                })
+                                .for_each(|event| {
+                                    manager.send(&payload.proxy, event);
+                                });
                         }
                     });
                 }
