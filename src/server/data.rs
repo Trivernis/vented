@@ -7,6 +7,7 @@ use executors::crossbeam_workstealing_pool;
 use executors::parker::DynParker;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use x25519_dalek::PublicKey;
 
@@ -29,4 +30,5 @@ pub(crate) struct ServerConnectionContext {
     pub forwarded_connections: Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream, ()>>>>,
     pub pool: crossbeam_workstealing_pool::ThreadPool<DynParker>,
     pub redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<(), VentedError>>>>,
+    pub listener_count: Arc<AtomicUsize>,
 }

@@ -43,7 +43,7 @@ fn test_server_communication() {
             trusted: false,
         },
     ];
-    let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes.clone(), 6);
+    let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes.clone(), 2);
     let mut server_b = VentedServer::new("B".to_string(), global_secret_b, nodes.clone(), 3);
     let mut server_c = VentedServer::new("C".to_string(), global_secret_c, nodes, 3);
     let wg = server_a.listen("localhost:22222".to_string());
