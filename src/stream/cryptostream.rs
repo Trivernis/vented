@@ -1,10 +1,10 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ByteOrder};
-use crypto_box::{ChaChaBox, SecretKey};
 use crypto_box::aead::{Aead, Payload};
+use crypto_box::{ChaChaBox, SecretKey};
 use generic_array::GenericArray;
 use parking_lot::Mutex;
 use sha2::Digest;
@@ -99,19 +99,27 @@ impl CryptoStream {
     pub fn receiver_node(&self) -> &String {
         &self.recv_node_id
     }
+
+    /// Closes both streams
+    pub fn shutdown(&self) -> VentedResult<()> {
+        self.send_stream.lock().shutdown(Shutdown::Both)?;
+        self.recv_stream.lock().shutdown(Shutdown::Both)?;
+
+        Ok(())
+    }
 }
 
 pub struct EncryptionBox<T>
-    where
-        T: Aead,
+where
+    T: Aead,
 {
     inner: T,
     counter: u128,
 }
 
 impl<T> EncryptionBox<T>
-    where
-        T: Aead,
+where
+    T: Aead,
 {
     /// Creates a new encryption box with the given inner value
     pub fn new(inner: T) -> Self {
