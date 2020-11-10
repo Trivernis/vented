@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use vented::event::Event;
-use vented::server::data::Node;
+use vented::server::data::{Node, ServerTimeouts};
 use vented::server::server_events::NODE_LIST_REQUEST_EVENT;
 use vented::server::VentedServer;
 
@@ -51,9 +51,30 @@ fn test_server_communication() {
             trusted: false,
         })
     }
-    let mut server_a = VentedServer::new("A".to_string(), global_secret_a, nodes_a, 20, 100);
-    let mut server_b = VentedServer::new("B".to_string(), global_secret_b, nodes.clone(), 3, 100);
-    let server_c = VentedServer::new("C".to_string(), global_secret_c, nodes, 3, 100);
+    let mut server_a = VentedServer::new(
+        "A".to_string(),
+        global_secret_a,
+        nodes_a,
+        ServerTimeouts::default(),
+        20,
+        100,
+    );
+    let mut server_b = VentedServer::new(
+        "B".to_string(),
+        global_secret_b,
+        nodes.clone(),
+        ServerTimeouts::default(),
+        3,
+        100,
+    );
+    let server_c = VentedServer::new(
+        "C".to_string(),
+        global_secret_c,
+        nodes,
+        ServerTimeouts::default(),
+        3,
+        100,
+    );
     let wg = server_a.listen("localhost:22222".to_string());
     wg.wait();
 

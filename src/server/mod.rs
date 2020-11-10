@@ -5,7 +5,7 @@ use std::mem;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossbeam_utils::sync::WaitGroup;
 use crypto_box::{PublicKey, SecretKey};
@@ -16,14 +16,14 @@ use x25519_dalek::StaticSecret;
 
 use crate::event::Event;
 use crate::event_handler::EventHandler;
-use crate::server::data::{Node, NodeData, NodeState, ServerConnectionContext};
+use crate::server::data::{Node, NodeData, NodeState, ServerConnectionContext, ServerTimeouts};
 use crate::server::server_events::{
     AuthPayload, ChallengePayload, NodeInformationPayload, RedirectPayload, VersionMismatchPayload,
     ACCEPT_EVENT, AUTH_EVENT, CHALLENGE_EVENT, CONNECT_EVENT, MISMATCH_EVENT, READY_EVENT,
     REDIRECT_EVENT, REJECT_EVENT,
 };
 use crate::stream::cryptostream::CryptoStream;
-use crate::stream::manager::{ConcurrentStreamManager, CONNECTION_TIMEOUT_SECONDS};
+use crate::stream::manager::ConcurrentStreamManager;
 use crate::utils::result::{VentedError, VentedResult};
 use crate::utils::sync::AsyncValue;
 use std::cmp::max;
@@ -40,7 +40,7 @@ type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<Crypto
 /// Usage:
 /// ```rust
 /// use vented::server::VentedServer;
-/// use vented::server::data::Node;
+/// use vented::server::data::{Node, ServerTimeouts};
 /// use vented::stream::SecretKey;
 /// use rand::thread_rng;
 /// use vented::event::Event;
@@ -57,7 +57,7 @@ type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<Crypto
 /// // in a real world example the secret key needs to be loaded from somewhere because connections
 /// // with unknown keys are not accepted.
 /// let global_secret = SecretKey::generate(&mut thread_rng());
-/// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4, 100);
+/// let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), ServerTimeouts::default(), 4, 100);
 ///
 ///
 /// server.listen("localhost:20000".to_string());
@@ -78,6 +78,7 @@ pub struct VentedServer {
     manager: ConcurrentStreamManager,
     sender_pool: Arc<Mutex<ScheduledThreadPool>>,
     receiver_pool: Arc<Mutex<ScheduledThreadPool>>,
+    timeouts: ServerTimeouts,
 }
 
 impl VentedServer {
@@ -88,6 +89,7 @@ impl VentedServer {
         node_id: String,
         secret_key: SecretKey,
         nodes: Vec<Node>,
+        timeouts: ServerTimeouts,
         num_threads: usize,
         max_threads: usize,
     ) -> Self {
@@ -112,6 +114,7 @@ impl VentedServer {
                 num_threads / 2,
                 1,
             )))),
+            timeouts,
         };
         server.register_events();
         server.start_event_listener();
@@ -203,6 +206,7 @@ impl VentedServer {
             redirect_handles: Arc::clone(&self.redirect_handles),
             manager: self.manager.clone(),
             recv_pool: Arc::clone(&self.receiver_pool),
+            timeouts: self.timeouts.clone(),
         }
     }
 
@@ -347,7 +351,7 @@ impl VentedServer {
             }
 
             if let Some(Ok(_)) =
-                future.get_value_with_timeout(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS))
+                future.get_value_with_timeout(context.timeouts.redirect_timeout.clone())
             {
                 return Ok(());
             } else {
@@ -362,7 +366,7 @@ impl VentedServer {
     /// then establishing an encrypted connection
     fn handle_connection(context: ServerConnectionContext, stream: TcpStream) -> VentedResult<()> {
         let event_handler = Arc::clone(&context.event_handler);
-        stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
+        stream.set_write_timeout(Some(context.timeouts.send_timeout))?;
         log::trace!(
             "Received connection from {}",
             stream.peer_addr().expect("Failed to get peer address")
@@ -451,7 +455,7 @@ impl VentedServer {
         address: String,
     ) -> VentedResult<CryptoStream> {
         let stream = TcpStream::connect(address)?;
-        stream.set_write_timeout(Some(Duration::from_secs(CONNECTION_TIMEOUT_SECONDS)))?;
+        stream.set_write_timeout(Some(context.timeouts.send_timeout))?;
         context.is_server = false;
         let stream = Self::get_crypto_stream(context, stream)?;
 

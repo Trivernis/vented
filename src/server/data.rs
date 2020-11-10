@@ -8,7 +8,7 @@ use x25519_dalek::PublicKey;
 
 use crate::event_handler::EventHandler;
 use crate::stream::cryptostream::CryptoStream;
-use crate::stream::manager::ConcurrentStreamManager;
+use crate::stream::manager::{ConcurrentStreamManager, CONNECTION_TIMEOUT_SECONDS};
 use crate::utils::result::VentedError;
 use crate::utils::sync::AsyncValue;
 use std::time::{Duration, Instant};
@@ -46,6 +46,22 @@ pub(crate) struct ServerConnectionContext {
     pub recv_pool: Arc<Mutex<ScheduledThreadPool>>,
     pub redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<(), VentedError>>>>,
     pub manager: ConcurrentStreamManager,
+    pub timeouts: ServerTimeouts,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServerTimeouts {
+    pub send_timeout: Duration,
+    pub redirect_timeout: Duration,
+}
+
+impl Default for ServerTimeouts {
+    fn default() -> Self {
+        Self {
+            send_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECONDS),
+            redirect_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECONDS * 2),
+        }
+    }
 }
 
 impl From<Node> for NodeData {
