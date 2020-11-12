@@ -1,17 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use crypto_box::SecretKey;
-use parking_lot::Mutex;
-use scheduled_thread_pool::ScheduledThreadPool;
 use x25519_dalek::PublicKey;
 
-use crate::event_handler::EventHandler;
-use crate::stream::cryptostream::CryptoStream;
-use crate::stream::manager::{ConcurrentStreamManager, CONNECTION_TIMEOUT_SECONDS};
-use crate::utils::result::VentedError;
-use crate::utils::sync::AsyncValue;
 use std::time::{Duration, Instant};
+
+pub const CONNECTION_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -34,21 +25,6 @@ pub enum NodeState {
     Unknown,
 }
 
-#[derive(Clone)]
-pub(crate) struct ServerConnectionContext {
-    pub is_server: bool,
-    pub node_id: String,
-    pub global_secret: SecretKey,
-    pub known_nodes: Arc<Mutex<HashMap<String, NodeData>>>,
-    pub event_handler: Arc<Mutex<EventHandler>>,
-    pub forwarded_connections: Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream, ()>>>>,
-    pub sender_pool: Arc<Mutex<ScheduledThreadPool>>,
-    pub recv_pool: Arc<Mutex<ScheduledThreadPool>>,
-    pub redirect_handles: Arc<Mutex<HashMap<[u8; 16], AsyncValue<(), VentedError>>>>,
-    pub manager: ConcurrentStreamManager,
-    pub timeouts: ServerTimeouts,
-}
-
 #[derive(Clone, Debug)]
 pub struct ServerTimeouts {
     pub send_timeout: Duration,
@@ -58,8 +34,8 @@ pub struct ServerTimeouts {
 impl Default for ServerTimeouts {
     fn default() -> Self {
         Self {
-            send_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECONDS),
-            redirect_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECONDS * 2),
+            send_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECS),
+            redirect_timeout: Duration::from_secs(CONNECTION_TIMEOUT_SECS * 2),
         }
     }
 }

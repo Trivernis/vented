@@ -34,7 +34,7 @@ fn it_deserializes_events() {
     let mut event = Event::with_payload("test".to_string(), &payload);
     let event_bytes = event.as_bytes();
 
-    let deserialized_event = Event::from_bytes(&mut event_bytes.as_slice()).unwrap();
+    let deserialized_event = Event::from(&mut event_bytes.as_slice()).unwrap();
     assert_eq!(deserialized_event.name, "test".to_string());
     assert_eq!(
         deserialized_event.get_payload::<SimplePayload>().unwrap(),

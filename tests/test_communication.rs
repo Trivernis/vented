@@ -1,7 +1,8 @@
+use async_std::task;
 use crypto_box::SecretKey;
+use log::LevelFilter;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use vented::event::Event;
 use vented::server::data::{Node, ServerTimeouts};
@@ -9,7 +10,12 @@ use vented::server::server_events::NODE_LIST_REQUEST_EVENT;
 use vented::server::VentedServer;
 
 fn setup() {
-    simple_logger::SimpleLogger::new().init().unwrap();
+    simple_logger::SimpleLogger::new()
+        .with_module_level("async_std", LevelFilter::Warn)
+        .with_module_level("async_io", LevelFilter::Warn)
+        .with_module_level("polling", LevelFilter::Warn)
+        .init()
+        .unwrap();
 }
 
 #[test]
@@ -51,74 +57,80 @@ fn test_server_communication() {
             trusted: false,
         })
     }
-    let mut server_a = VentedServer::new(
-        "A".to_string(),
-        global_secret_a,
-        nodes_a,
-        ServerTimeouts::default(),
-        20,
-        100,
-    );
-    let mut server_b = VentedServer::new(
-        "B".to_string(),
-        global_secret_b,
-        nodes.clone(),
-        ServerTimeouts::default(),
-        3,
-        100,
-    );
-    let server_c = VentedServer::new(
-        "C".to_string(),
-        global_secret_c,
-        nodes,
-        ServerTimeouts::default(),
-        3,
-        100,
-    );
-    let wg = server_a.listen("localhost:22222".to_string());
-    wg.wait();
 
-    server_a.on("ping", {
-        let ping_count = Arc::clone(&ping_count);
-        move |_| {
-            ping_count.fetch_add(1, Ordering::Relaxed);
+    task::block_on(async {
+        let mut server_a = VentedServer::new(
+            "A".to_string(),
+            global_secret_a,
+            nodes_a,
+            ServerTimeouts::default(),
+        );
+        let mut server_b = VentedServer::new(
+            "B".to_string(),
+            global_secret_b,
+            nodes.clone(),
+            ServerTimeouts::default(),
+        );
+        let server_c = VentedServer::new(
+            "C".to_string(),
+            global_secret_c,
+            nodes,
+            ServerTimeouts::default(),
+        );
+        server_a.listen("localhost:22222".to_string());
 
-            Some(Event::new("pong".to_string()))
+        server_a.on("ping", {
+            let ping_count = Arc::clone(&ping_count);
+            move |_| {
+                let ping_count = Arc::clone(&ping_count);
+                Box::pin(async move {
+                    ping_count.fetch_add(1, Ordering::Relaxed);
+
+                    Some(Event::new("pong".to_string()))
+                })
+            }
+        });
+        server_b.on("pong", {
+            let pong_count = Arc::clone(&pong_count);
+            move |_| {
+                let pong_count = Arc::clone(&pong_count);
+                Box::pin(async move {
+                    pong_count.fetch_add(1, Ordering::Relaxed);
+                    None
+                })
+            }
+        });
+        for i in 0..10 {
+            assert!(server_a
+                .emit(format!("Nodes-{}", i), Event::new("ping"))
+                .await
+                .is_err());
         }
-    });
-    server_b.on("pong", {
-        let pong_count = Arc::clone(&pong_count);
-        move |_| {
-            pong_count.fetch_add(1, Ordering::Relaxed);
-            None
-        }
-    });
-    for i in 0..10 {
-        server_a.emit(format!("Nodes-{}", i), Event::new("ping"));
-    }
-    server_b
-        .emit("A", Event::new(NODE_LIST_REQUEST_EVENT))
-        .on_success(|_| println!("Success"))
-        .block_unwrap();
-    server_c
-        .emit("A", Event::new("ping".to_string()))
-        .block_unwrap();
-    for _ in 0..9 {
         server_b
+            .emit("A", Event::new(NODE_LIST_REQUEST_EVENT))
+            .await
+            .unwrap();
+        server_c
             .emit("A", Event::new("ping".to_string()))
-            .block_unwrap();
-    }
-    server_a
-        .emit("B", Event::new("pong".to_string()))
-        .block_unwrap();
-    server_b
-        .emit("C", Event::new("ping".to_string()))
-        .block_unwrap();
-
+            .await
+            .unwrap();
+        for _ in 0..9 {
+            server_b
+                .emit("A", Event::new("ping".to_string()))
+                .await
+                .unwrap();
+        }
+        server_a
+            .emit("B", Event::new("pong".to_string()))
+            .await
+            .unwrap();
+        server_b
+            .emit("C", Event::new("ping".to_string()))
+            .await
+            .unwrap();
+        task::sleep(Duration::from_secs(1)).await;
+    });
     // wait one second to make sure the servers were able to process the events
-    for _ in 0..100 {
-        thread::sleep(Duration::from_millis(10));
-    }
 
     assert_eq!(ping_count.load(Ordering::SeqCst), 10);
     assert_eq!(pong_count.load(Ordering::SeqCst), 10);

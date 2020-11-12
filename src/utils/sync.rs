@@ -1,6 +1,6 @@
-use std::{mem, thread};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{mem};
 
 use parking_lot::Mutex;
 
@@ -15,8 +15,8 @@ pub struct AsyncValue<V, E> {
 }
 
 impl<V, E> AsyncValue<V, E>
-    where
-        E: std::fmt::Display,
+where
+    E: std::fmt::Display,
 {
     /// Creates the future with no value
     pub fn new() -> Self {
@@ -51,8 +51,8 @@ impl<V, E> AsyncValue<V, E>
     }
 
     pub fn on_error<F>(&mut self, cb: F) -> &mut Self
-        where
-            F: FnOnce(&E) -> () + Send + Sync + 'static,
+    where
+        F: FnOnce(&E) -> () + Send + Sync + 'static,
     {
         self.err_cb.lock().replace(Box::new(cb));
 
@@ -60,8 +60,8 @@ impl<V, E> AsyncValue<V, E>
     }
 
     pub fn on_success<F>(&mut self, cb: F) -> &mut Self
-        where
-            F: FnOnce(&V) -> () + Send + Sync + 'static,
+    where
+        F: FnOnce(&V) -> () + Send + Sync + 'static,
     {
         self.ok_cb.lock().replace(Box::new(cb));
 
@@ -113,12 +113,32 @@ impl<V, E> AsyncValue<V, E>
         }
     }
 
+    /// Returns the value asynchronously
+    pub async fn get_value_async(&mut self) -> Result<V, E> {
+        while self.value.lock().is_none() {
+            async_std::task::sleep(Duration::from_millis(1)).await;
+        }
+        if let Some(err) = self.error.lock().take() {
+            Err(err)
+        } else {
+            Ok(self.value.lock().take().unwrap())
+        }
+    }
+
     /// Returns the value of the future only blocking for the given timeout
     pub fn get_value_with_timeout(&mut self, timeout: Duration) -> Option<Result<V, E>> {
+        async_std::task::block_on(self.get_value_with_timeout_async(timeout))
+    }
+
+    /// Returns the value of the future asynchronous with a timeout after the given duration
+    pub async fn get_value_with_timeout_async(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<Result<V, E>> {
         let start = Instant::now();
 
         while self.value.lock().is_none() {
-            thread::sleep(Duration::from_millis(1));
+            async_std::task::sleep(Duration::from_millis(1)).await;
             if start.elapsed() > timeout {
                 break;
             }
@@ -144,3 +164,6 @@ impl<T, E> Clone for AsyncValue<T, E> {
         }
     }
 }
+
+unsafe impl<T, E> Sync for AsyncValue<T, E> {}
+unsafe impl<T, E> Send for AsyncValue<T, E> {}

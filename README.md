@@ -1,6 +1,6 @@
 # Vented
 
-Vented is an event based TCP server with encryption that uses message pack for payload data.
+Vented is an event based asynchronous TCP server with encryption that uses message pack for payload data.
 
 ## Encryption
 
@@ -15,31 +15,35 @@ The crate used for the key exchanges is [x25519-dalek](https://crates.io/crates/
 
  ```rust
 use vented::server::VentedServer;
-use vented::server::data::Node;
-use vented::crypto::SecretKey;
+use vented::server::data::{Node, ServerTimeouts};
+use vented::stream::SecretKey;
 use rand::thread_rng;
 use vented::event::Event;
 
 fn main() {
+    let global_secret_b = SecretKey::generate(&mut thread_rng());
     let nodes = vec![
-        Node {
-            id: "B".to_string(),
-            address: None,
-            public_key: global_secret_b.public_key() // load it from somewhere
-        },
+    Node {
+           id: "B".to_string(),
+           addresses: vec![],
+           trusted: true,
+           public_key: global_secret_b.public_key() // load it from somewhere
+       },
     ];
     // in a real world example the secret key needs to be loaded from somewhere because connections
     // with unknown keys are not accepted.
-    let global_secret = SecretKey::new(&mut thread_rng());
-    let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), 4);
+    let global_secret = SecretKey::generate(&mut thread_rng());
+    let mut server = VentedServer::new("A".to_string(), global_secret, nodes.clone(), ServerTimeouts::default());
     
     
     server.listen("localhost:20000".to_string());
     server.on("pong", |_event| {
-        println!("Pong!");
-        
-        None    // the return value is the response event Option<Event>
+       Box::pin(async {println!("Pong!");
+       
+           None
+       })
     });
-    server.emit("B".to_string(), Event::new("ping".to_string())).unwrap();
+    assert!(async_std::task::block_on(server.emit("B", Event::new("ping".to_string()))).is_err()) // this won't work without a known node B
+    }
 }
  ```

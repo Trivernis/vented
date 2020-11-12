@@ -1,10 +1,11 @@
-use std::io::Read;
+use async_std::io::{Read, ReadExt};
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::result::{VentedError, VentedResult};
+use async_std::net::TcpStream;
 
 pub trait GenericEvent {}
 
@@ -72,17 +73,38 @@ impl Event {
         data
     }
 
-    /// Deserializes the message from bytes that can be read from the given reader
-    /// The result will be the Message with the specific message payload type
-    pub fn from_bytes<R: Read>(bytes: &mut R) -> VentedResult<Self> {
-        let name_length = bytes.read_u16::<BigEndian>()?;
+    pub fn from<R: Read + ReadBytesExt>(buf: &mut R) -> VentedResult<Self> {
+        let name_length = buf.read_u16::<BigEndian>()?;
         let mut name_buf = vec![0u8; name_length as usize];
-        bytes.read_exact(&mut name_buf)?;
+        buf.read_exact(&mut name_buf)?;
         let event_name = String::from_utf8(name_buf).map_err(|_| VentedError::NameDecodingError)?;
 
-        let payload_length = bytes.read_u64::<BigEndian>()?;
+        let payload_length = buf.read_u64::<BigEndian>()?;
         let mut payload = vec![0u8; payload_length as usize];
-        bytes.read_exact(&mut payload)?;
+        buf.read_exact(&mut payload)?;
+
+        Ok(Self {
+            name: event_name,
+            payload,
+            origin: None,
+        })
+    }
+
+    /// Deserializes the message from bytes that can be read from the given reader
+    /// The result will be the Message with the specific message payload type
+    pub async fn from_async_tcp(stream: &mut TcpStream) -> VentedResult<Self> {
+        let mut name_length_raw = [0u8; 2];
+        stream.read_exact(&mut name_length_raw).await?;
+        let name_length = BigEndian::read_u16(&mut name_length_raw);
+        let mut name_buf = vec![0u8; name_length as usize];
+        stream.read_exact(&mut name_buf).await?;
+        let event_name = String::from_utf8(name_buf).map_err(|_| VentedError::NameDecodingError)?;
+
+        let mut payload_length_raw = [0u8; 8];
+        stream.read_exact(&mut payload_length_raw).await?;
+        let payload_length = BigEndian::read_u64(&payload_length_raw);
+        let mut payload = vec![0u8; payload_length as usize];
+        stream.read_exact(&mut payload).await?;
 
         Ok(Self {
             name: event_name,
