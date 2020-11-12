@@ -56,20 +56,21 @@ impl EventHandler {
 
     /// Handles a single event
     pub async fn handle_event(&mut self, event: Event) -> Vec<Event> {
-        let mut response_events: Vec<Event> = Vec::new();
+        let mut option_futures = Vec::new();
 
         if let Some(handlers) = self.event_handlers.lock().get(&event.name) {
             for handler in handlers {
                 let result = handler(event.clone());
-                task::block_on(async {
-                    if let Some(e) = result.await {
-                        response_events.push(e.clone());
-                    }
-                })
+                option_futures.push(result);
             }
         }
-
-        response_events
+        task::block_on(async move {
+            futures::future::join_all(option_futures)
+                .await
+                .into_iter()
+                .filter_map(|opt| opt)
+                .collect::<Vec<Event>>()
+        })
     }
 }
 

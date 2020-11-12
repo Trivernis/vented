@@ -2,7 +2,7 @@ use async_std::net::{TcpListener, TcpStream};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crypto_box::{PublicKey, SecretKey};
 use parking_lot::Mutex;
@@ -20,6 +20,7 @@ use crate::server::server_events::{
 use crate::stream::cryptostream::CryptoStream;
 use crate::utils::result::{VentedError, VentedResult};
 use crate::utils::sync::AsyncValue;
+use async_listen::ListenExt;
 use async_std::prelude::*;
 use async_std::task;
 use std::pin::Pin;
@@ -158,21 +159,21 @@ impl VentedServer {
                 }
             };
             log::info!("Listener running on {}", address);
-            while let Some(connection) = listener.incoming().next().await {
-                match connection {
-                    Ok(stream) => {
-                        let mut this = this.clone();
-                        task::spawn(async move {
-                            if let Err(e) = this.handle_connection(stream).await {
-                                log::error!("Failed to handle connection: {}", e);
-                            }
-                        });
+            while let Some((token, stream)) = listener
+                .incoming()
+                .log_warnings(|e| log::warn!("Failed to establish connection: {}", e))
+                .handle_errors(Duration::from_millis(500))
+                .backpressure(1000)
+                .next()
+                .await
+            {
+                let mut this = this.clone();
+                task::spawn(async move {
+                    if let Err(e) = this.handle_connection(stream).await {
+                        log::error!("Failed to handle connection: {}", e);
                     }
-                    Err(e) => {
-                        log::trace!("Failed to establish connection: {}", e);
-                        continue;
-                    }
-                }
+                    std::mem::drop(token)
+                });
             }
         });
     }
