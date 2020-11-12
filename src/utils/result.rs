@@ -71,3 +71,6 @@ impl From<crypto_box::aead::Error> for VentedError {
         Self::CryptoError(other)
     }
 }
+
+unsafe impl Send for VentedError {}
+unsafe impl Sync for VentedError {}
