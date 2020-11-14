@@ -325,23 +325,27 @@ impl VentedServer {
     async fn read_stream(
         mut stream: CryptoStream,
         connections: Arc<Mutex<HashMap<String, CryptoStream>>>,
-        mut handler: EventHandler,
+        handler: EventHandler,
     ) {
         loop {
             match stream.read().await {
                 Ok(mut event) => {
-                    event.origin = Some(stream.receiver_node().clone());
-                    let results = handler.handle_event(event).await;
-                    for result in results {
-                        if let Err(e) = stream.send(result).await {
-                            log::error!(
-                                "Failed to send event to {}: {}",
-                                stream.receiver_node(),
-                                e
-                            );
-                            break;
+                    let mut handler = handler.clone();
+                    let mut stream = stream.clone();
+                    task::spawn(async move {
+                        event.origin = Some(stream.receiver_node().clone());
+                        let results = handler.handle_event(event).await;
+                        for result in results {
+                            if let Err(e) = stream.send(result).await {
+                                log::error!(
+                                    "Failed to send event to {}: {}",
+                                    stream.receiver_node(),
+                                    e
+                                );
+                                stream.shutdown().expect("Failed to shutdown stream");
+                            }
                         }
-                    }
+                    });
                 }
                 Err(e) => {
                     log::error!(
@@ -354,6 +358,7 @@ impl VentedServer {
             }
         }
         connections.lock().remove(stream.receiver_node());
+        stream.shutdown().expect("Failed to shutdown stream");
     }
 
     /// Takes three attempts to retrieve a connection for the given node.
