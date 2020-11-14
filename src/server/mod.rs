@@ -36,6 +36,7 @@ pub mod server_events;
 
 pub(crate) const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL_VERSION: &str = "1.0";
+pub const RETRY_LIMIT: usize = 3;
 
 type ForwardFutureVector = Arc<Mutex<HashMap<(String, String), AsyncValue<CryptoStream, ()>>>>;
 
@@ -137,7 +138,22 @@ impl VentedServer {
     /// Emits an event to the specified Node
     #[inline]
     pub async fn emit<S: ToString>(&self, node_id: S, event: Event) -> VentedResult<()> {
-        self.send_event(&node_id.to_string(), event, true).await
+        let mut count = 0;
+        loop {
+            match self
+                .send_event(&node_id.to_string(), event.clone(), true)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    count += 1;
+                    log::warn!("Failed to send event on try {}: {}", count, e);
+                    if count == RETRY_LIMIT {
+                        return Err(e);
+                    }
+                }
+            }
+        }
     }
 
     /// Adds a handler for the given event.
