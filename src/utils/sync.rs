@@ -1,6 +1,12 @@
+/*
+ * vented asynchronous event based tcp server
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
+use std::mem;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{mem};
 
 use parking_lot::Mutex;
 
