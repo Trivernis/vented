@@ -1,3 +1,9 @@
+/*
+ * vented asynchronous event based tcp server
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
 use x25519_dalek::PublicKey;
 
 use std::time::{Duration, Instant};

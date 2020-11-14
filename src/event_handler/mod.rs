@@ -1,3 +1,9 @@
+/*
+ * vented asynchronous event based tcp server
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
 use std::collections::HashMap;
 
 use crate::event::Event;

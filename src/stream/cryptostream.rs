@@ -1,3 +1,9 @@
+/*
+ * vented asynchronous event based tcp server
+ * Copyright (C) 2020 trivernis
+ * See LICENSE for more information
+ */
+
 use async_std::prelude::*;
 
 use byteorder::{BigEndian, ByteOrder};
