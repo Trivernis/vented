@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use async_std::task;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use x25519_dalek::PublicKey;
@@ -137,13 +138,21 @@ impl VentedServer {
                 let connections = Arc::clone(&connections);
                 Box::pin(async move {
                     let payload = event.get_payload::<RedirectPayload>().ok()?;
+
                     if payload.source == event.origin? {
+                        log::trace!(
+                            "Handling redirect from {} via {} to {}",
+                            payload.source,
+                            payload.proxy,
+                            payload.target
+                        );
                         let opt_stream = connections.lock().get(&payload.target).cloned();
                         if let Some(mut stream) = opt_stream {
                             if let Ok(_) = stream
                                 .send(Event::with_payload(REDIRECT_REDIRECTED_EVENT, &payload))
                                 .await
                             {
+                                log::trace!("Redirect succeeded");
                                 return Some(Event::with_payload(
                                     REDIRECT_CONFIRM_EVENT,
                                     &RedirectResponsePayload { id: payload.id },
@@ -152,6 +161,7 @@ impl VentedServer {
                         }
                     }
 
+                    log::trace!("Redirect failed");
                     Some(Event::with_payload(
                         REDIRECT_FAIL_EVENT,
                         &RedirectResponsePayload { id: payload.id },
@@ -168,32 +178,44 @@ impl VentedServer {
                 let mut event_handler = event_handler.clone();
                 Box::pin(async move {
                     let payload = event.get_payload::<RedirectPayload>().ok()?;
-                    let event = Event::from(&mut &payload.content[..]).ok()?;
                     let origin = event.origin.clone()?;
+                    let event = Event::from(&mut &payload.content[..]).ok()?;
 
-                    let responses = event_handler.handle_event(event).await;
-                    let responses = responses
-                        .iter()
-                        .cloned()
-                        .map(|mut value| {
-                            let payload = payload.clone();
-                            Event::with_payload(
-                                REDIRECT_EVENT,
-                                &RedirectPayload::new(
-                                    payload.target,
-                                    payload.proxy,
-                                    payload.source,
-                                    value.as_bytes(),
-                                ),
-                            )
-                        })
-                        .collect::<Vec<Event>>();
-                    let opt_stream = connections.lock().get(&origin).cloned();
-                    if let Some(mut stream) = opt_stream {
-                        for response in responses {
-                            stream.send(response).await.ok()?;
+                    log::trace!("Spawning task to handle redirect responses");
+                    task::spawn(async move {
+                        log::trace!("Emitting redirected event...");
+                        let responses = event_handler.handle_event(event).await;
+                        log::trace!("Mapping responses...");
+                        let responses = responses
+                            .iter()
+                            .cloned()
+                            .map(|mut value| {
+                                let payload = payload.clone();
+                                Event::with_payload(
+                                    REDIRECT_EVENT,
+                                    &RedirectPayload::new(
+                                        payload.target,
+                                        payload.proxy,
+                                        payload.source,
+                                        value.as_bytes(),
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<Event>>();
+                        let opt_stream = connections.lock().get(&origin).cloned();
+
+                        log::trace!("Sending responses...");
+                        if let Some(mut stream) = opt_stream {
+                            for response in responses {
+                                if let Err(e) = stream.send(response).await {
+                                    log::error!("Failed to send response events: {}", e);
+                                    connections.lock().remove(stream.receiver_node());
+                                    stream.shutdown().expect("Failed to shutdown stream");
+                                }
+                            }
                         }
-                    }
+                    });
+                    log::trace!("Done");
 
                     None
                 })

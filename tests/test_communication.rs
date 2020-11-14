@@ -1,7 +1,7 @@
 use async_std::task;
 use crypto_box::SecretKey;
 use log::LevelFilter;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use vented::event::Event;
@@ -23,6 +23,7 @@ fn test_server_communication() {
     setup();
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
+    let c_pinged = Arc::new(AtomicBool::new(false));
     let mut rng = rand::thread_rng();
     let global_secret_a = SecretKey::generate(&mut rng);
     let global_secret_b = SecretKey::generate(&mut rng);
@@ -71,7 +72,7 @@ fn test_server_communication() {
             nodes.clone(),
             ServerTimeouts::default(),
         );
-        let server_c = VentedServer::new(
+        let mut server_c = VentedServer::new(
             "C".to_string(),
             global_secret_c,
             nodes,
@@ -100,6 +101,16 @@ fn test_server_communication() {
                 })
             }
         });
+        server_c.on("ping", {
+            let c_pinged = Arc::clone(&c_pinged);
+            move |_| {
+                let c_pinged = Arc::clone(&c_pinged);
+                Box::pin(async move {
+                    c_pinged.store(true, Ordering::Relaxed);
+                    None
+                })
+            }
+        });
         for i in 0..10 {
             assert!(server_a
                 .emit(format!("Nodes-{}", i), Event::new("ping"))
@@ -114,6 +125,10 @@ fn test_server_communication() {
             .emit("A", Event::new("ping".to_string()))
             .await
             .unwrap();
+        server_b
+            .emit("C", Event::new("ping".to_string()))
+            .await
+            .unwrap();
         for _ in 0..9 {
             server_b
                 .emit("A", Event::new("ping".to_string()))
@@ -124,14 +139,11 @@ fn test_server_communication() {
             .emit("B", Event::new("pong".to_string()))
             .await
             .unwrap();
-        server_b
-            .emit("C", Event::new("ping".to_string()))
-            .await
-            .unwrap();
-        task::sleep(Duration::from_secs(1)).await;
+        task::sleep(Duration::from_secs(2)).await;
     });
     // wait one second to make sure the servers were able to process the events
 
     assert_eq!(ping_count.load(Ordering::SeqCst), 10);
     assert_eq!(pong_count.load(Ordering::SeqCst), 10);
+    assert!(c_pinged.load(Ordering::SeqCst));
 }
