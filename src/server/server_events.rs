@@ -113,7 +113,7 @@ impl VentedServer {
                 let redirect_handles = Arc::clone(&redirect_handles);
                 Box::pin(async move {
                     let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
-                    let mut value = redirect_handles.lock().remove(&payload.id)?;
+                    let mut value = redirect_handles.lock().await.remove(&payload.id)?;
                     value.resolve(());
                     None
                 })
@@ -125,7 +125,7 @@ impl VentedServer {
                 let redirect_handles = Arc::clone(&redirect_handles);
                 Box::pin(async move {
                     let payload = event.get_payload::<RedirectResponsePayload>().ok()?;
-                    let mut value = redirect_handles.lock().remove(&payload.id)?;
+                    let mut value = redirect_handles.lock().await.remove(&payload.id)?;
                     value.reject(VentedError::Rejected);
 
                     None
@@ -146,7 +146,7 @@ impl VentedServer {
                             payload.proxy,
                             payload.target
                         );
-                        let opt_stream = connections.lock().get(&payload.target).cloned();
+                        let opt_stream = connections.lock().await.get(&payload.target).cloned();
                         if let Some(mut stream) = opt_stream {
                             if let Ok(_) = stream
                                 .send(Event::with_payload(REDIRECT_REDIRECTED_EVENT, &payload))
@@ -202,15 +202,15 @@ impl VentedServer {
                                 )
                             })
                             .collect::<Vec<Event>>();
-                        let opt_stream = connections.lock().get(&origin).cloned();
+                        let opt_stream = connections.lock().await.get(&origin).cloned();
 
                         log::trace!("Sending responses...");
                         if let Some(mut stream) = opt_stream {
                             for response in responses {
                                 if let Err(e) = stream.send(response).await {
                                     log::error!("Failed to send response events: {}", e);
-                                    connections.lock().remove(stream.receiver_node());
-                                    stream.shutdown().expect("Failed to shutdown stream");
+                                    connections.lock().await.remove(stream.receiver_node());
+                                    stream.shutdown().await.expect("Failed to shutdown stream");
                                 }
                             }
                         }
@@ -230,7 +230,7 @@ impl VentedServer {
                 let own_node_id = own_node_id.clone();
                 Box::pin(async move {
                     let list = event.get_payload::<NodeListPayload>().ok()?;
-                    let mut own_nodes = node_list.lock();
+                    let mut own_nodes = node_list.lock().await;
                     let origin = event.origin?;
 
                     if !own_nodes.get(&origin)?.node().trusted {
@@ -269,6 +269,7 @@ impl VentedServer {
                     let sender_id = event.origin?;
                     let nodes = node_list
                         .lock()
+                        .await
                         .values()
                         .filter(|node| node.node().id != sender_id)
                         .map(|node| NodeListElement {

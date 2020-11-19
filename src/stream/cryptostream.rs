@@ -6,11 +6,11 @@
 
 use async_std::prelude::*;
 
+use async_std::sync::Mutex;
 use byteorder::{BigEndian, ByteOrder};
 use crypto_box::aead::{Aead, Payload};
 use crypto_box::{ChaChaBox, SecretKey};
 use generic_array::GenericArray;
-use parking_lot::Mutex;
 use sha2::Digest;
 use std::sync::Arc;
 use typenum::*;
@@ -24,7 +24,8 @@ use async_std::net::{Shutdown, TcpStream};
 #[derive(Clone)]
 pub struct CryptoStream {
     recv_node_id: String,
-    stream: TcpStream,
+    read_stream: Arc<Mutex<TcpStream>>,
+    write_stream: Arc<Mutex<TcpStream>>,
     send_secret: Arc<Mutex<EncryptionBox<ChaChaBox>>>,
     recv_secret: Arc<Mutex<EncryptionBox<ChaChaBox>>>,
 }
@@ -42,7 +43,8 @@ impl CryptoStream {
 
         Ok(Self {
             recv_node_id: node_id,
-            stream: inner,
+            read_stream: Arc::new(Mutex::new(inner.clone())),
+            write_stream: Arc::new(Mutex::new(inner)),
             send_secret: Arc::new(Mutex::new(send_box)),
             recv_secret: Arc::new(Mutex::new(recv_box)),
         })
@@ -53,15 +55,16 @@ impl CryptoStream {
     /// length: u64
     /// data: length
     pub async fn send(&mut self, mut event: Event) -> VentedResult<()> {
-        let ciphertext = self.send_secret.lock().encrypt(&event.as_bytes())?;
+        let ciphertext = self.send_secret.lock().await.encrypt(&event.as_bytes())?;
         let mut length_raw = [0u8; 8];
         BigEndian::write_u64(&mut length_raw, ciphertext.len() as u64);
 
         log::trace!("Encoded event '{}' to raw message", event.name);
 
-        self.stream.write(&length_raw).await?;
-        self.stream.write(&ciphertext).await?;
-        self.stream.flush().await?;
+        let mut stream = self.write_stream.lock().await;
+        stream.write(&length_raw).await?;
+        stream.write(&ciphertext).await?;
+        stream.flush().await?;
 
         log::trace!("Event sent");
 
@@ -71,14 +74,15 @@ impl CryptoStream {
     /// Reads an event from the stream. Blocks until data is received
     pub async fn read(&mut self) -> VentedResult<Event> {
         let mut length_raw = [0u8; 8];
-        self.stream.read_exact(&mut length_raw).await?;
+        let mut stream = self.read_stream.lock().await;
+        stream.read_exact(&mut length_raw).await?;
 
         let length = BigEndian::read_u64(&length_raw);
         let mut ciphertext = vec![0u8; length as usize];
-        self.stream.read(&mut ciphertext).await?;
+        stream.read(&mut ciphertext).await?;
         log::trace!("Received raw message");
 
-        let plaintext = self.recv_secret.lock().decrypt(&ciphertext)?;
+        let plaintext = self.recv_secret.lock().await.decrypt(&ciphertext)?;
 
         let event = Event::from(&mut &plaintext[..])?;
         log::trace!("Decoded message to event '{}'", event.name);
@@ -87,11 +91,11 @@ impl CryptoStream {
     }
 
     /// Updates the keys in the inner encryption box
-    pub fn update_key(&self, secret_key: &SecretKey, public_key: &PublicKey) {
+    pub async fn update_key(&self, secret_key: &SecretKey, public_key: &PublicKey) {
         let send_box = ChaChaBox::new(public_key, secret_key);
         let recv_box = ChaChaBox::new(public_key, secret_key);
-        self.send_secret.lock().swap_box(send_box);
-        self.recv_secret.lock().swap_box(recv_box);
+        self.send_secret.lock().await.swap_box(send_box);
+        self.recv_secret.lock().await.swap_box(recv_box);
         log::trace!("Updated secret");
     }
 
@@ -100,8 +104,8 @@ impl CryptoStream {
     }
 
     /// Closes both streams
-    pub fn shutdown(&mut self) -> VentedResult<()> {
-        self.stream.shutdown(Shutdown::Both)?;
+    pub async fn shutdown(&mut self) -> VentedResult<()> {
+        self.read_stream.lock().await.shutdown(Shutdown::Both)?;
 
         Ok(())
     }

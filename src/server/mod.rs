@@ -10,8 +10,8 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_std::sync::Mutex;
 use crypto_box::{PublicKey, SecretKey};
-use parking_lot::Mutex;
 use sha2::Digest;
 use x25519_dalek::StaticSecret;
 
@@ -122,8 +122,7 @@ impl VentedServer {
 
     /// Returns the nodes known to the server
     pub fn nodes(&self) -> Vec<Node> {
-        self.known_nodes
-            .lock()
+        task::block_on(self.known_nodes.lock())
             .values()
             .cloned()
             .map(Node::from)
@@ -240,7 +239,7 @@ impl VentedServer {
             NodeState::Dead(Instant::now())
         };
 
-        if let Some(node) = self.known_nodes.lock().get_mut(target) {
+        if let Some(node) = self.known_nodes.lock().await.get_mut(target) {
             node.set_node_state(node_state);
         }
 
@@ -252,6 +251,7 @@ impl VentedServer {
         let connected_nodes = self
             .known_nodes
             .lock()
+            .await
             .values()
             .filter(|node| node.is_alive())
             .cloned()
@@ -267,6 +267,7 @@ impl VentedServer {
             let mut value = AsyncValue::new();
             self.redirect_handles
                 .lock()
+                .await
                 .insert(payload.id, AsyncValue::clone(&value));
 
             if let Ok(mut stream) = self.get_connection(&node.node().id).await {
@@ -307,6 +308,7 @@ impl VentedServer {
         log::trace!("Secure connection established.");
         self.connections
             .lock()
+            .await
             .insert(stream.receiver_node().clone(), stream.clone());
         self.event_handler
             .handle_event(Event::new(READY_EVENT))
@@ -342,7 +344,7 @@ impl VentedServer {
                                     stream.receiver_node(),
                                     e
                                 );
-                                stream.shutdown().expect("Failed to shutdown stream");
+                                stream.shutdown().await.expect("Failed to shutdown stream");
                             }
                         }
                     });
@@ -357,15 +359,15 @@ impl VentedServer {
                 }
             }
         }
-        connections.lock().remove(stream.receiver_node());
-        stream.shutdown().expect("Failed to shutdown stream");
+        connections.lock().await.remove(stream.receiver_node());
+        stream.shutdown().await.expect("Failed to shutdown stream");
     }
 
     /// Takes three attempts to retrieve a connection for the given node.
     /// First it tries to use the already established connection stored in the shared connections vector.
     /// If that fails it tries to establish a new connection to the node by using the known address
     async fn get_connection(&self, target: &String) -> VentedResult<CryptoStream> {
-        if let Some(stream) = self.connections.lock().get(target) {
+        if let Some(stream) = self.connections.lock().await.get(target) {
             log::trace!("Reusing existing connection.");
             return Ok(stream.clone());
         }
@@ -373,6 +375,7 @@ impl VentedServer {
         let target_node = self
             .known_nodes
             .lock()
+            .await
             .get(target)
             .cloned()
             .ok_or(VentedError::UnknownNode(target.clone()))?;
@@ -386,6 +389,7 @@ impl VentedServer {
                     log::error!("Failed to connect to node {}'s address: {}", target, e);
                     self.known_nodes
                         .lock()
+                        .await
                         .get_mut(target)
                         .unwrap()
                         .node_mut()
@@ -405,6 +409,7 @@ impl VentedServer {
         let stream = self.perform_client_key_exchange(stream).await?;
         self.connections
             .lock()
+            .await
             .insert(stream.receiver_node().clone(), stream.clone());
         task::spawn(Self::read_stream(
             stream.clone(),
@@ -462,7 +467,7 @@ impl VentedServer {
 
         let public_key = PublicKey::from(public_key);
 
-        let node_data = if let Some(data) = self.known_nodes.lock().get(&node_id) {
+        let node_data = if let Some(data) = self.known_nodes.lock().await.get(&node_id) {
             data.clone()
         } else {
             stream.write(&Event::new(REJECT_EVENT).as_bytes()).await?;
@@ -486,7 +491,7 @@ impl VentedServer {
         let final_secret =
             Self::generate_final_secret(pre_secret.to_bytes().to_vec(), key_a, key_b);
         let final_public = final_secret.public_key();
-        stream.update_key(&final_secret, &final_public);
+        stream.update_key(&final_secret, &final_public).await;
 
         Ok(stream)
     }
@@ -524,7 +529,7 @@ impl VentedServer {
         }
 
         let public_key = PublicKey::from(public_key);
-        let data_options = self.known_nodes.lock().get(&node_id).cloned();
+        let data_options = self.known_nodes.lock().await.get(&node_id).cloned();
         let node_data = if let Some(data) = data_options {
             data
         } else {
@@ -564,7 +569,7 @@ impl VentedServer {
         let final_secret =
             Self::generate_final_secret(pre_secret.to_bytes().to_vec(), key_a, key_b);
         let final_public = final_secret.public_key();
-        stream.update_key(&final_secret, &final_public);
+        stream.update_key(&final_secret, &final_public).await;
 
         Ok(stream)
     }
